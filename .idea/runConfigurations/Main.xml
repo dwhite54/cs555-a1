@@ -1,0 +1,17 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="Main" type="Application" factoryName="Application" nameIsGenerated="true">
+    <option name="INCLUDE_PROVIDED_SCOPE" value="true" />
+    <option name="MAIN_CLASS_NAME" value="com.cs555.a1.Main" />
+    <module name="cs555-a1" />
+    <option name="PROGRAM_PARAMETERS" value="--controller-port 8892 --controller-machine blue.cs.colostate.edu --chunk-port 8893 --chunk-machines yellow.cs.colostate.edu,cyan.cs.colostate.edu,pink.cs.colostate.edu,magenta.cs.colostate.edu" />
+    <extension name="coverage">
+      <pattern>
+        <option name="PATTERN" value="com.cs555.a1.*" />
+        <option name="ENABLED" value="true" />
+      </pattern>
+    </extension>
+    <method v="2">
+      <option name="Make" enabled="true" />
+    </method>
+  </configuration>
+</component>
