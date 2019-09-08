@@ -4,31 +4,53 @@ import java.io.IOException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.UnknownHostException;
+import java.nio.ByteBuffer;
 import java.nio.channels.*;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
 
 public class Controller {
-    public int ControllerPort = 0;
-    public String ControllerMachine = "";
+    private AsynchronousServerSocketChannel serverChannel;
+    private Future<AsynchronousSocketChannel> acceptResult;
+
     public Controller(int controllerPort, String controllerMachine) {
-        ControllerPort = controllerPort;
-        ControllerMachine = controllerMachine;
-        ChunkPort = chunkPort;
-        ChunkMachines = chunkMachines;
-        String hostname = "unknown";
         try {
-            hostname = InetAddress.getLocalHost().getHostName();
-        } catch (UnknownHostException e) {
-            System.out.println("Unknown host.");
-            System.out.println(e.getMessage());
+            serverChannel = AsynchronousServerSocketChannel.open();
+            InetSocketAddress hostAddress = new InetSocketAddress(controllerMachine, controllerPort);
+            serverChannel.bind(hostAddress);
+            acceptResult = serverChannel.accept();
+        } catch (IOException e) {
+            e.printStackTrace();
         }
-        System.out.print(String.format("Hello from Controller on %s!%n", hostname));
     }
 
-    public void run() throws IOException {
-        AsynchronousServerSocketChannel server = AsynchronousServerSocketChannel.open();
-        server.bind(new InetSocketAddress(ControllerMachine, ControllerPort));
-        Future<AsynchronousSocketChannel> acceptFuture = server.accept();
-        AsynchronousSocketChannel worker = future.get();
+    public void run() {
+        try {
+            AsynchronousSocketChannel clientChannel = acceptResult.get();
+            if ((clientChannel != null) && (clientChannel.isOpen())) {
+                ByteBuffer buffer = ByteBuffer.allocate(32);
+                Future<Integer> readResult = clientChannel.read(buffer);
+
+                // do some computation
+
+                readResult.get();
+
+                buffer.flip();
+                String message = new String(buffer.array()).trim();
+                buffer = ByteBuffer.wrap(new String(message).getBytes());
+                Future<Integer> writeResult = clientChannel.write(buffer);
+
+                // do some computation
+                writeResult.get();
+                buffer.clear();
+
+
+                clientChannel.close();
+                serverChannel.close();
+
+            }
+        } catch (InterruptedException | IOException | ExecutionException e) {
+            e.printStackTrace();
+        }
     }
 }
