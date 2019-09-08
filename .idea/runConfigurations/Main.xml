@@ -3,7 +3,7 @@
     <option name="INCLUDE_PROVIDED_SCOPE" value="true" />
     <option name="MAIN_CLASS_NAME" value="com.cs555.a1.Main" />
     <module name="cs555-a1" />
-    <option name="PROGRAM_PARAMETERS" value="--controller-port 8892 --controller-machine green.cs.colostate.edu --chunk-port 8893 --chunk-machines yellow.cs.colostate.edu,cyan.cs.colostate.edu,pink.cs.colostate.edu,magenta.cs.colostate.edu" />
+    <option name="PROGRAM_PARAMETERS" value="--mode client --controller-port 8892 --controller-machine green --chunk-port 8893 --chunk-machines yellow,cyan,pink,magenta" />
     <extension name="coverage">
       <pattern>
         <option name="PATTERN" value="com.cs555.a1.*" />

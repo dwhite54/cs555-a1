@@ -1,5 +1,8 @@
 package com.cs555.a1;
 
+import com.cs555.a1.chunkserver.ChunkServer;
+import com.cs555.a1.client.Client;
+import com.cs555.a1.controller.Controller;
 import org.w3c.dom.ranges.RangeException;
 
 import java.io.IOException;
@@ -19,7 +22,9 @@ public class Main {
         int chunkPort = 0;
         String controllerMachine = "";
         String[] chunkMachines = {};
-        boolean isClient = true;
+        boolean isClient = false;
+        boolean isController = false;
+        boolean isChunkServer = false;
         for (int i = 0; i < args.length; i++) {
             try {
                 switch (args[i]) {
@@ -41,14 +46,17 @@ public class Main {
                         if (chunkMachines.length == 0)
                             throw new IllegalArgumentException("Error parsing chunk machine list");
                         break;
-                    case "--is-client":
-                        isClient = false;
-                        break;
-                    case "--is-controller":
-                        isClient = false;
-                        break;
-                    case "--is-chunkserver":
-                        isClient = false;
+                    case "--mode":
+                        switch (args[i+1]) {
+                            case "client":
+                                isClient = true;
+                                break;
+                            case "controller":
+                                isController = true;
+                                break;
+                            case "chunkserver":
+                                isChunkServer = true;
+                        }
                         break;
                 }
             } catch (RangeException | IllegalArgumentException e) {  //catch range and parsing errors
@@ -63,64 +71,76 @@ public class Main {
             printUsage();
         } // ignore other cases, since those should be managed programmatically
 
-        if (isClient)
-            spawnProcesses(controllerPort, chunkPort, controllerMachine, chunkMachines);
-        else if (controllerPort != 0) { // we now know that this was a child process, configured to start a controller proc
-
-        } else if (chunkPort != 0) {
-
+        if (isClient) {
+            //TODO check if chunk servers/controller running before starting!! (allow multiple clients)
+            spawnProcesses(controllerPort, controllerMachine, chunkPort, chunkMachines);
+            Client client = new Client(controllerPort, controllerMachine, chunkPort, chunkMachines);
+            client.run();
         }
-
+        else if (isController) { // we now know that this was a child process, configured to start a controller proc
+            Controller controller = new Controller(controllerPort, controllerMachine);
+            controller.run();
+        } else if (chunkPort != 0) {
+            ChunkServer chunkServer = new ChunkServer(controllerPort, controllerMachine, chunkPort, chunkMachines);
+            chunkServer.run();
+        }
 
         Close();
         System.exit(0);
     }
 
-    private static void spawnProcesses(int controllerPort, int chunkPort, String controllerMachine, String[] chunkMachines) {
+    private static void spawnProcesses(int controllerPort, String controllerMachine, int chunkPort, String[] chunkMachines) {
         String jarPath = String.format("%s/cs555-a1.jar", System.getProperty("user.dir"));
         Processes = new Process[chunkMachines.length+1];
 
         for (int i = 0; i < chunkMachines.length; i++) {
-            String cmdArgs = String.format("--noclient --chunk-port %s", chunkPort);
+            String cmdArgs = String.format("--mode chunkserver --chunk-port %s", chunkPort);
             StartProcess(chunkMachines[i], jarPath, cmdArgs, i);
         }
 
-        String cmdArgs = String.format("--noclient --controller-port %s", controllerPort);
+        String cmdArgs = String.format("--mode controller --controller-port %s", controllerPort);
         StartProcess(controllerMachine, jarPath, cmdArgs, chunkMachines.length);
 
         for (Process p : Processes) {
             if (!p.isAlive() && p.exitValue() == 255) {
                 System.out.printf("Process %s closed with -1 exit value%n", p.toString());
-                String input = "";
-                String errors = "";
-                try {
-                    input = new String(p.getInputStream().readAllBytes());
-                    errors = new String(p.getErrorStream().readAllBytes());
-                } catch (IOException e) {
-                    System.out.println("Error occurred reading input and error streams:" + e.getMessage());
-                    Close();
-                    System.exit(-1);
-                }
-                System.out.printf("InputStream:%s%n", input);
-                System.out.printf("ErrorStream:%s%n", errors);
+                getProcessOutput(p);
                 Close();
                 System.exit(-1);
+
             }
         }
     }
 
+    private static void getProcessOutput(Process p) {
+        String input = "";
+        String errors = "";
+        try {
+            input = new String(p.getInputStream().readAllBytes());
+            errors = new String(p.getErrorStream().readAllBytes());
+        } catch (IOException e) {
+            System.out.println("Error occurred reading input and error streams:" + e.getMessage());
+            Close();
+            System.exit(-1);
+        }
+        System.out.printf("InputStream: %s%n", input);
+        System.out.printf("ErrorStream: %s%n", errors);
+    }
+
     private static void printUsage() {
         System.out.println("Options:");
-        System.out.println("\t--mode: determines whether to run this process as controller, chunk server, " +
-                "or client, starting controller and chunk servers if not detected");
+        System.out.println("\t--mode: [client,chunkserver,controller], determines whether to run this process as " +
+                "controller, chunk server, or client which starts controller and chunk servers if not detected).\n");
         System.out.println("\t--controller-port: port the controller will communicate with");
         System.out.println("\t--controller-machine: machine the controller will run on");
         System.out.println("\t--chunk-port: port the chunk servers will communicate with");
+        System.out.println("\t--chunk-port: comma-delimited list of machines the chunk servers will run on");
     }
 
     private static void StartProcess(String machine, String path, String args, int pIdx) {
-        String javaCmd = String.format("java -jar %s %s", path, args);
-        List<String> cmd = List.of("ssh", machine, "-t", javaCmd);
+        String javaJREPath = System.getProperty("java.home");
+        String javaCmd = String.format("%s/bin/java -jar %s %s", javaJREPath, path, args);
+        List<String> cmd = List.of("ssh", machine, "-tt", javaCmd);
         ProcessBuilder b = new ProcessBuilder(cmd);
         try {
             Processes[pIdx] = b.start();
@@ -138,7 +158,8 @@ public class Main {
         if (Processes != null) {
             for (Process p : Processes) {
                 if (p != null) {
-                    System.out.println("Found running process " + p.toString() + " now closing.");
+                    System.out.printf("Found running process %s now closing%n", p.toString());
+                    getProcessOutput(p);
                     p.destroy();
                 }
             }
