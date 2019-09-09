@@ -12,7 +12,7 @@ public class Main {
 
     private static Process[] Processes;
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws IOException, InterruptedException {
         if (args.length == 0 || args[0].equals("--help")) {
             printUsage();
             System.exit(0);
@@ -80,13 +80,12 @@ public class Main {
         else if (isController) { // we now know that this was a child process, configured to start a controller proc
             Controller controller = new Controller(controllerPort, controllerMachine);
             controller.run();
-        } else if (chunkPort != 0) {
+        } else if (isChunkServer) {
             ChunkServer chunkServer = new ChunkServer(controllerPort, controllerMachine, chunkPort, chunkMachines);
             chunkServer.run();
         }
 
         Close();
-        System.exit(0);
     }
 
     private static void spawnProcesses(int controllerPort, String controllerMachine, int chunkPort, String[] chunkMachines) {
@@ -140,7 +139,7 @@ public class Main {
     private static void StartProcess(String machine, String path, String args, int pIdx) {
         String javaJREPath = System.getProperty("java.home");
         String javaCmd = String.format("%s/bin/java -jar %s %s", javaJREPath, path, args);
-        List<String> cmd = List.of("ssh", machine, "-tt", javaCmd);
+        List<String> cmd = List.of("ssh", machine, "-tt", javaCmd, String.format(">%s/%s-output.txt", System.getProperty("user.dir"), machine));
         ProcessBuilder b = new ProcessBuilder(cmd);
         try {
             Processes[pIdx] = b.start();
@@ -160,7 +159,7 @@ public class Main {
                 if (p != null) {
                     System.out.printf("Found running process %s now closing%n", p.toString());
                     getProcessOutput(p);
-                    p.destroy();
+                    p.destroyForcibly();
                 }
             }
         }

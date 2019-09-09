@@ -1,55 +1,137 @@
 package com.cs555.a1.controller;
 
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
 import java.io.IOException;
-import java.net.InetAddress;
-import java.net.InetSocketAddress;
-import java.net.UnknownHostException;
+import java.net.*;
 import java.nio.ByteBuffer;
 import java.nio.channels.*;
+import java.text.DateFormat;
+import java.text.SimpleDateFormat;
+import java.util.Date;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
 
 public class Controller {
     private AsynchronousServerSocketChannel serverChannel;
     private Future<AsynchronousSocketChannel> acceptResult;
+    private AsynchronousSocketChannel clientChannel;
+    private ServerSocket ss;
+    private boolean shutdown = false;
+    public Controller(int controllerPort, String controllerMachine) throws IOException {
+        // server is listening on port 5056
+        ss = new ServerSocket(controllerPort);
+        final Thread mainThread = Thread.currentThread();
+        Runtime.getRuntime().addShutdownHook(new Thread() {
+            @Override
+            public void run() {
+                try {
+                    Close();
+                    mainThread.join();
+                } catch (InterruptedException | IOException e) {
+                    System.exit(-1);
+                }
+            }
+        });
 
-    public Controller(int controllerPort, String controllerMachine) {
-        try {
-            serverChannel = AsynchronousServerSocketChannel.open();
-            InetSocketAddress hostAddress = new InetSocketAddress(controllerMachine, controllerPort);
-            serverChannel.bind(hostAddress);
-            acceptResult = serverChannel.accept();
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
+
     }
 
-    public void run() {
-        try {
-            AsynchronousSocketChannel clientChannel = acceptResult.get();
-            if ((clientChannel != null) && (clientChannel.isOpen())) {
-                ByteBuffer buffer = ByteBuffer.allocate(32);
-                Future<Integer> readResult = clientChannel.read(buffer);
+    private void Close() throws IOException {
+        ss.close();
+        shutdown = true;
+    }
 
-                // do some computation
+    public void run() throws IOException, InterruptedException {
+        // running infinite loop for getting
+        // client request
+        while (!shutdown)
+        {
+            Socket s = null;
+            Thread.sleep(100);
+            try
+            {
+                // socket object to receive incoming client requests
+                s = ss.accept();
 
-                readResult.get();
+                System.out.println("A new client is connected : " + s);
 
-                buffer.flip();
-                String message = new String(buffer.array()).trim();
-                buffer = ByteBuffer.wrap(new String(message).getBytes());
-                Future<Integer> writeResult = clientChannel.write(buffer);
+                // obtaining input and out streams
+                DataInputStream dis = new DataInputStream(s.getInputStream());
+                DataOutputStream dos = new DataOutputStream(s.getOutputStream());
 
-                // do some computation
-                writeResult.get();
-                buffer.clear();
+                System.out.println("Assigning new thread for this client");
 
+                // create a new thread object
+                Thread t = new ClientHandler(s, dis, dos);
 
-                clientChannel.close();
-                serverChannel.close();
+                // Invoking the start() method
+                t.start();
 
             }
-        } catch (InterruptedException | IOException | ExecutionException e) {
+            catch (Exception e){
+                if (s != null){
+                    s.close();
+                }
+                e.printStackTrace();
+            }
+        }
+    }
+}
+// ClientHandler class
+class ClientHandler extends Thread
+{
+    final DataInputStream dis;
+    final DataOutputStream dos;
+    final Socket s;
+
+    // Constructor
+    ClientHandler(Socket s, DataInputStream dis, DataOutputStream dos)
+    {
+        this.s = s;
+        this.dis = dis;
+        this.dos = dos;
+    }
+
+    @Override
+    public void run()
+    {
+        String received;
+        String toreturn;
+        while (true)
+        {
+            try {
+                received = dis.readUTF();
+                String[] split = received.split(" ");
+                switch (split[0]) {
+                    case "write" :
+                        toreturn = "List of available online servers with space.";
+                        break;
+                    case "read" :
+                        toreturn = "Chunk server which contains this chunk";
+                        break;
+                    case "hminor" :
+                        toreturn = "nothing";
+                        break;
+                    case "hmajor" :
+                        toreturn = "nothing";
+                        break;
+                    default:
+                        toreturn = "Invalid input";
+                        break;
+                }
+                dos.writeUTF(toreturn);
+            } catch (IOException e) {
+                e.printStackTrace();
+                break;
+            }
+        }
+
+        try
+        {
+            this.dis.close();
+            this.dos.close();
+        } catch(IOException e){
             e.printStackTrace();
         }
     }
