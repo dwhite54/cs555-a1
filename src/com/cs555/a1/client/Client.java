@@ -15,9 +15,9 @@ import java.util.concurrent.Future;
 public class Client {
     //private AsynchronousSocketChannel controllerClient;
     //private HashMap<String, AsynchronousSocketChannel> chunkClients = new HashMap<String, AsynchronousSocketChannel>();
-    private HashMap<String, Future<Void>> chunkFutures = new HashMap<String, Future<Void>>();
+    private HashMap<String, Future<Void>> chunkFutures = new HashMap<>();
     private InetSocketAddress controllerAddress;
-    private HashMap<String, InetSocketAddress> chunkAddresses = new HashMap<String, InetSocketAddress>();
+    private HashMap<String, InetSocketAddress> chunkAddresses = new HashMap<>();
 
     public Client(int controllerPort, String controllerMachine, int chunkPort, String[] chunkMachines) {
         controllerAddress = new InetSocketAddress(controllerMachine, controllerPort);
@@ -30,7 +30,7 @@ public class Client {
 
     public void run() {
         Scanner scanner = new Scanner(System.in);
-        String input = "";
+        String input;
         boolean exit = false;
         System.out.println("Type a command and hit return. To see available commands, type 'help'");
         while (!exit) {
@@ -45,9 +45,6 @@ public class Client {
                     case "bye":
                         exit = true;
                         break;
-                    case "help":
-                        printHelp();
-                        break;
                     case "read":
                         out = fn(controllerAddress, "read");
                         //pass this along to chunk server from out
@@ -55,6 +52,11 @@ public class Client {
                     case "write":
                         out = fn(controllerAddress, "write");
                         //pass this along to chunk server from out
+                        break;
+                    default:
+                        System.out.println("Invalid command");
+                    case "help":
+                        printHelp();
                         break;
                 }
             } else {

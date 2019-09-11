@@ -1,40 +1,50 @@
 package com.cs555.a1.controller;
 
-import java.io.DataInputStream;
-import java.io.DataOutputStream;
-import java.io.IOException;
+import com.cs555.a1.Chunk;
+
+import java.io.*;
 import java.net.*;
-import java.nio.ByteBuffer;
 import java.nio.channels.*;
-import java.text.DateFormat;
-import java.text.SimpleDateFormat;
-import java.util.Date;
-import java.util.concurrent.ExecutionException;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.concurrent.Future;
 
+import static java.util.Set.of;
+
 public class Controller {
+    static class ChunkMachine {
+        int space;
+        int numChunks;
+        ChunkMachine(int space, int numChunks){
+            this.space = space;
+            this.numChunks = numChunks;
+        }
+    }
+
     private AsynchronousServerSocketChannel serverChannel;
     private Future<AsynchronousSocketChannel> acceptResult;
     private AsynchronousSocketChannel clientChannel;
     private ServerSocket ss;
     private boolean shutdown = false;
-    public Controller(int controllerPort, String controllerMachine) throws IOException {
-        // server is listening on port 5056
+    private HashMap<String, Set<String>> chunkMap;  //chunks to machines which contain them
+    private HashSet<String> chunkMachines = new HashSet<>();
+    private HashMap<String, ChunkMachine> chunkMachineMap = null; //machines to metrice (free space and total number)
+    
+    public Controller(int controllerPort, String controllerMachine, int chunkPort, String[] chunkMachines) throws IOException {
+        chunkMap = new HashMap<>();
+        this.chunkMachines.addAll(Arrays.asList(chunkMachines));
         ss = new ServerSocket(controllerPort);
         final Thread mainThread = Thread.currentThread();
-        Runtime.getRuntime().addShutdownHook(new Thread() {
-            @Override
-            public void run() {
-                try {
-                    Close();
-                    mainThread.join();
-                } catch (InterruptedException | IOException e) {
-                    System.exit(-1);
-                }
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            try {
+                Close();
+                mainThread.join();
+            } catch (InterruptedException | IOException e) {
+                System.exit(-1);
             }
-        });
-
-
+        }));
     }
 
     private void Close() throws IOException {
@@ -57,13 +67,13 @@ public class Controller {
                 System.out.println("A new client is connected : " + s);
 
                 // obtaining input and out streams
-                DataInputStream dis = new DataInputStream(s.getInputStream());
-                DataOutputStream dos = new DataOutputStream(s.getOutputStream());
+                DataInputStream in = new DataInputStream(s.getInputStream());
+                DataOutputStream out = new DataOutputStream(s.getOutputStream());
 
                 System.out.println("Assigning new thread for this client");
 
                 // create a new thread object
-                Thread t = new ClientHandler(s, dis, dos);
+                Thread t = new ControllerClientHandler(s, in, out);
 
                 // Invoking the start() method
                 t.start();
@@ -77,62 +87,91 @@ public class Controller {
             }
         }
     }
-}
-// ClientHandler class
-class ClientHandler extends Thread
-{
-    final DataInputStream dis;
-    final DataOutputStream dos;
-    final Socket s;
-
-    // Constructor
-    ClientHandler(Socket s, DataInputStream dis, DataOutputStream dos)
+    // ClientHandler class
+    class ControllerClientHandler extends Thread
     {
-        this.s = s;
-        this.dis = dis;
-        this.dos = dos;
-    }
+        final DataInputStream in;
+        final DataOutputStream out;
+        final Socket s;
 
-    @Override
-    public void run()
-    {
-        String received;
-        String toreturn;
-        while (true)
+        // Constructor
+        ControllerClientHandler(Socket s, DataInputStream in, DataOutputStream out)
         {
-            try {
-                received = dis.readUTF();
-                String[] split = received.split(" ");
-                switch (split[0]) {
-                    case "write" :
-                        toreturn = "List of available online servers with space.";
-                        break;
-                    case "read" :
-                        toreturn = "Chunk server which contains this chunk";
-                        break;
-                    case "hminor" :
-                        toreturn = "nothing";
-                        break;
-                    case "hmajor" :
-                        toreturn = "nothing";
-                        break;
-                    default:
-                        toreturn = "Invalid input";
-                        break;
+            this.s = s;
+            this.in = in;
+            this.out = out;
+        }
+
+        @Override
+        public void run()
+        {
+            while (true)
+            {
+                try {
+                    String host = s.getInetAddress().getHostName();
+                    //TODO this is weak logic, perhaps an (shared) enum or string verb to denote command types?
+                    if (chunkMachines.contains(host)) {  //talking to a chunk server
+                        processHeartbeat(host);
+                    } else {  // talking to a client
+                        processClientRequest();
+                    }
+
+
+
+                } catch (IOException e) {
+                    e.printStackTrace();
+                    break;
                 }
-                dos.writeUTF(toreturn);
-            } catch (IOException e) {
+            }
+
+            try
+            {
+                this.in.close();
+                this.out.close();
+            } catch(IOException e){
                 e.printStackTrace();
-                break;
             }
         }
 
-        try
-        {
-            this.dis.close();
-            this.dos.close();
-        } catch(IOException e){
-            e.printStackTrace();
+        private void processHeartbeat(String host) throws IOException {
+            boolean isMajor = in.readBoolean();
+            int freeSpace = in.readInt();
+            int numChunks = in.readInt();
+            HashSet<String> affirms = new HashSet<>();
+            for (int i = 0; i < numChunks; i++) {
+                int chunkVersion = in.readInt(); //currently unused
+                String chunkName = in.readUTF();
+                if (chunkMap.containsKey(chunkName)) {
+                    chunkMap.get(chunkName).add(host);
+                } else {
+                    HashSet<String> machineSet = new HashSet<>();
+                    machineSet.add(host);
+                    chunkMap.put(chunkName, machineSet);
+                }
+                if (isMajor) {
+                    affirms.add(chunkName);
+                }
+            }
+            if (isMajor) {  // process deletions
+                for (String chunkName : chunkMap.keySet()) {
+                    // if global data says this host has it, but its latest major HB says it doesn't, delete
+                    if (chunkMap.get(chunkName).contains(host) && !affirms.contains(chunkName)) {
+                        chunkMap.get(chunkName).remove(host);
+                    }
+                }
+            }
+            //update machine info
+            if (!chunkMachineMap.containsKey(host)) {
+                chunkMachineMap.put(host, new ChunkMachine(freeSpace, numChunks));
+            } else {
+                chunkMachineMap.get(host).numChunks = numChunks;
+                chunkMachineMap.get(host).space = freeSpace;
+            }
+        }
+
+        private void processClientRequest() {
+            //figure out if it's a read or write
+
         }
     }
 }
