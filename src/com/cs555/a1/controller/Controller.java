@@ -137,8 +137,9 @@ public class Controller {
             boolean isMajor = in.readBoolean();
             int freeSpace = in.readInt();
             int numChunks = in.readInt();
+            int numMsgChunks = in.readInt();
             HashSet<String> affirms = new HashSet<>();
-            for (int i = 0; i < numChunks; i++) {
+            for (int i = 0; i < numMsgChunks; i++) {
                 int chunkVersion = in.readInt(); //currently unused
                 String chunkName = in.readUTF();
                 if (chunkMap.containsKey(chunkName)) {
@@ -160,7 +161,7 @@ public class Controller {
                     }
                 }
             }
-            //update machine info
+            //update space and total chunks per machine
             if (!chunkMachineMap.containsKey(host)) {
                 chunkMachineMap.put(host, new ChunkMachine(freeSpace, numChunks));
             } else {

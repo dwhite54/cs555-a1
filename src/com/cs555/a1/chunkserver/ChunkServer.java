@@ -7,14 +7,20 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.channels.AsynchronousServerSocketChannel;
 import java.nio.channels.AsynchronousSocketChannel;
+import java.nio.file.Paths;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.concurrent.Future;
 
 public class ChunkServer {
+    private String chunkHome = "/tmp/dwhite54/chunks";
+    private int BpSlice = 1024*8;
+    private int slicesPerFile = 8;
+    private int BpHash = 20;
     private int controllerPort;
     private String controllerMachine;
     private int chunkPort;
@@ -35,6 +41,7 @@ public class ChunkServer {
         this.controllerMachine = controllerMachine;
         this.chunkPort = chunkPort;
         this.chunkMachines = chunkMachines;
+        this.chunks = new HashMap<>();
         ss = new ServerSocket(controllerPort);
         final Thread mainThread = Thread.currentThread();
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
@@ -135,10 +142,9 @@ public class ChunkServer {
                 DataOutputStream out = new DataOutputStream(s.getOutputStream());
                 out.writeBoolean(isMajor);
                 out.writeInt(space);
-                int numChunks = 0;
-                if (isMajor)
-                    numChunks = chunks.size();
-                else {  // find out how many we will write--this is ugly and could be improved! RACE CONDITION??
+                out.writeInt(chunks.size());
+                int numChunks = chunks.size();
+                if (!isMajor) {  // find out how many we will write--this is ugly and could be improved! RACE CONDITION??
                     for (String key : chunks.keySet()) {
                         if (chunks.get(key).isNew) {
                             numChunks++;
@@ -149,7 +155,7 @@ public class ChunkServer {
                 for (String key : chunks.keySet()) {
                     Chunk chunk = chunks.get(key);
                     if (chunk.isNew || isMajor) {
-                        out.writeUTF(chunk.filename);
+                        out.writeUTF(chunk.fileName);
                         out.writeInt(chunk.version);
                     }
                 }
@@ -177,35 +183,44 @@ public class ChunkServer {
         @Override
         public void run()
         {
-            String received;
-            String toreturn;
-            while (true)
-            {
-                try {
-                    received = in.readUTF();
-                    String[] split = received.split(" ");
-                    switch (split[0]) {
-                        case "write" :
-                            toreturn = "List of available online servers with space.";
-                            break;
-                        case "read" :
-                            toreturn = "Chunk server which contains this chunk";
-                            break;
-                        case "hminor" :
-                            toreturn = "nothing";
-                            break;
-                        case "hmajor" :
-                            toreturn = "nothing";
-                            break;
-                        default:
-                            toreturn = "Invalid input";
-                            break;
-                    }
-                    out.writeUTF(toreturn);
-                } catch (IOException e) {
-                    e.printStackTrace();
-                    break;
+            try {
+                String fileName;
+                int fileSize;
+                byte[] fileContents;
+                switch (in.readUTF()) {
+                    case "write" :
+                        fileName = in.readUTF();
+                        fileSize = in.readInt();  // likely 64k, but check anyway (could be last chunk)
+                        fileContents = new byte[fileSize];
+                        in.readFully(fileContents);
+                        boolean result = writeChunk(fileName, fileContents);
+                        out.writeBoolean(result);
+                        break;
+                    case "read" :
+                        fileName = in.readUTF();
+                        if (chunks.containsKey(fileName)) {
+                            fileContents = readChunk(fileName);
+                            if (fileContents != null) {
+                                out.writeInt(fileContents.length);
+                                out.write(fileContents);
+                            } else {
+                                //TODO handle failure by 1) tell controller, getting alt CS 2) get alt CS file 3) send to client
+                            }
+                        } else if (new File(fileName).exists()){
+                            // TODO handle when the file exists but our in-memory metadata says it doesn't (server crashed)
+                        } else {
+                            out.writeInt(0);
+                        }
+                        break;
+                    case "heartbeat" :  // tell the controller we are still here
+                        out.writeBoolean(true); //TODO send false when the chunk server is undergoing repair?
+                        break;
+                    default:
+                        out.writeUTF("Invalid input");
+                        break;
                 }
+            } catch (IOException e) {
+                e.printStackTrace();
             }
 
             try
@@ -214,6 +229,72 @@ public class ChunkServer {
                 this.out.close();
             } catch(IOException e){
                 e.printStackTrace();
+            }
+        }
+
+        private byte[] readChunk(String fileName) {
+            try {
+                String fullPath = Paths.get(chunkHome, fileName).toString();
+                FileInputStream fileInputStream = new FileInputStream(fullPath);
+                byte[] contents = fileInputStream.readAllBytes();
+
+                if (!validateChunk(fullPath, contents)) return null;
+
+                return contents;
+            } catch (IOException | NoSuchAlgorithmException e) {
+                e.printStackTrace();
+                return null;
+            }
+        }
+
+        private boolean validateChunk(String fileName, byte[] contents) throws IOException, NoSuchAlgorithmException {
+            FileInputStream hashInputStream = new FileInputStream(fileName + ".sha1");
+            byte[] hashes = hashInputStream.readAllBytes();
+
+            //check if the number of slices equals the number of hashes
+            int numSlices = contents.length / BpSlice;
+            int sliceRemainder = contents.length % BpSlice;
+            if (sliceRemainder > 0) {  // if we have extra data beyond the last full 8KB slice, consider it a new slice
+                numSlices++;
+            }
+
+            if (numSlices > slicesPerFile) {
+                return true;
+            }
+
+            int numHashes = hashes.length / BpHash;
+            int hashRemainder = hashes.length % BpHash;
+            if (hashRemainder > 0) {
+                return true;
+            }
+
+            if (numHashes != numSlices) {
+                return true;
+            }
+
+            for (int i = 0; i < numSlices; i++) {
+                byte[] oldHash = Arrays.copyOfRange(hashes, i*BpHash, (i*BpHash)+BpHash);
+                byte[] slice = Arrays.copyOfRange(contents, i*BpSlice, (i*BpSlice)+BpSlice);
+                byte[] newHash = getSHA1(slice);
+                if (!Arrays.equals(oldHash, newHash)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private boolean writeChunk(String fileName, byte[] contents) {
+            File file = new File(fileName);
+            String[] splits = fileName.split("_");
+            int sequence = Integer.parseInt(splits[splits.length - 1]);
+            if (file.exists()) {
+                chunks.get(fileName).version++;
+            } else {
+                Chunk chunk = new Chunk();
+                chunk.fileName = fileName;
+                chunk.version = 1;
+                chunk.sequence = sequence;
+                chunks.put(fileName, chunk);
             }
         }
     }
