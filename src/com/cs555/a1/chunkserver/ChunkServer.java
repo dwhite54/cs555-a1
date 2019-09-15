@@ -155,6 +155,7 @@ public class ChunkServer {
                 for (String key : chunks.keySet()) {
                     Chunk chunk = chunks.get(key);
                     if (chunk.isNew || isMajor) {
+                        chunk.isNew = false;
                         out.writeUTF(chunk.fileName);
                         out.writeInt(chunk.version);
                     }
@@ -238,7 +239,7 @@ public class ChunkServer {
                 FileInputStream fileInputStream = new FileInputStream(fullPath);
                 byte[] contents = fileInputStream.readAllBytes();
 
-                if (!validateChunk(fullPath, contents)) return null;
+                if (!validateChunk(fileName, contents)) return null;
 
                 return contents;
             } catch (IOException | NoSuchAlgorithmException e) {
@@ -284,17 +285,38 @@ public class ChunkServer {
         }
 
         private boolean writeChunk(String fileName, byte[] contents) {
-            File file = new File(fileName);
-            String[] splits = fileName.split("_");
-            int sequence = Integer.parseInt(splits[splits.length - 1]);
-            if (file.exists()) {
-                chunks.get(fileName).version++;
-            } else {
-                Chunk chunk = new Chunk();
-                chunk.fileName = fileName;
-                chunk.version = 1;
-                chunk.sequence = sequence;
-                chunks.put(fileName, chunk);
+            try {
+                File file = new File(Paths.get(chunkHome, fileName).toString());
+                if (file.exists()) {
+                    Chunk chunk = chunks.get(fileName);
+                    chunk.version++;
+                    chunk.isNew = true;
+                } else {
+                    Chunk chunk = new Chunk();
+                    chunk.fileName = fileName;
+                    chunk.version = 1;
+                    String[] splits = fileName.split("_");
+                    chunk.sequence = Integer.parseInt(splits[splits.length - 1]);
+                    chunks.put(fileName, chunk);
+                }
+
+                int numSlices = contents.length / BpSlice;
+                if (contents.length % BpSlice > 0) {
+                    numSlices++;
+                }
+
+                byte[] hashes = new byte[numSlices * BpHash];
+                for (int i = 0; i < numSlices; i++) {
+                    byte[] hash = getSHA1(Arrays.copyOfRange(contents, i * BpSlice, (i * BpSlice) + BpSlice));
+                    System.arraycopy(hash, 0, hashes, (i * BpHash), hash.length);
+                }
+
+                FileOutputStream hashStream = new FileOutputStream(file.getPath().toString() + ".sha1");
+                hashStream.write(hashes);
+                return true;
+            } catch (NoSuchAlgorithmException | IOException e) {
+                e.printStackTrace();
+                return false;
             }
         }
     }

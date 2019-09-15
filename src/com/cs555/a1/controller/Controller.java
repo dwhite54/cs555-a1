@@ -1,14 +1,11 @@
 package com.cs555.a1.controller;
 
-import com.cs555.a1.Chunk;
-
 import java.io.*;
 import java.net.*;
 import java.nio.channels.*;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.Set;
 import java.util.concurrent.Future;
 
 import static java.util.Set.of;
@@ -17,9 +14,11 @@ public class Controller {
     static class ChunkMachine {
         int space;
         int numChunks;
+        HashSet<String> chunks;
         ChunkMachine(int space, int numChunks){
             this.space = space;
             this.numChunks = numChunks;
+            this.chunks = new HashSet<>();
         }
     }
 
@@ -28,13 +27,13 @@ public class Controller {
     private AsynchronousSocketChannel clientChannel;
     private ServerSocket ss;
     private boolean shutdown = false;
-    private HashMap<String, Set<String>> chunkMap;  //chunks to machines which contain them
-    private HashSet<String> chunkMachines = new HashSet<>();
-    private HashMap<String, ChunkMachine> chunkMachineMap = null; //machines to metrice (free space and total number)
+    private HashSet<String> machines;
+    private HashMap<String, HashSet<String>> chunksToMachines;  //chunks to machines which contain them
+    private HashMap<String, ChunkMachine> machinesToMetrics = null; //machines to metrics (free space and total number)
     
     public Controller(int controllerPort, String controllerMachine, int chunkPort, String[] chunkMachines) throws IOException {
-        chunkMap = new HashMap<>();
-        this.chunkMachines.addAll(Arrays.asList(chunkMachines));
+        chunksToMachines = new HashMap<>();
+        this.machines.addAll(Arrays.asList(chunkMachines));
         ss = new ServerSocket(controllerPort);
         final Thread mainThread = Thread.currentThread();
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
@@ -87,6 +86,7 @@ public class Controller {
             }
         }
     }
+
     // ClientHandler class
     class ControllerClientHandler extends Thread
     {
@@ -105,23 +105,32 @@ public class Controller {
         @Override
         public void run()
         {
-            while (true)
-            {
-                try {
-                    String host = s.getInetAddress().getHostName();
-                    //TODO this is weak logic, perhaps an (shared) enum or string verb to denote command types?
-                    if (chunkMachines.contains(host)) {  //talking to a chunk server
+            try {
+                String fileName;
+                String host = s.getInetAddress().getHostName();
+                switch (in.readUTF()) {
+                    case "write" :
+                        fileName = in.readUTF();
+                        if (chunksToMachines.containsKey(fileName)) {
+                            out.writeBoolean(true);
+                            HashSet<String> matchedMachines = chunksToMachines.get(fileName);
+                            //todo get top 3 machines by space
+                        } else {
+                            out.writeBoolean(false);
+                        }
+                        break;
+                    case "read" :
+
+                        break;
+                    case "heartbeat" :
                         processHeartbeat(host);
-                    } else {  // talking to a client
-                        processClientRequest();
-                    }
-
-
-
-                } catch (IOException e) {
-                    e.printStackTrace();
-                    break;
+                        break;
+                    default:
+                        out.writeUTF("Invalid input");
+                        break;
                 }
+            } catch (IOException e) {
+                e.printStackTrace();
             }
 
             try
@@ -142,37 +151,32 @@ public class Controller {
             for (int i = 0; i < numMsgChunks; i++) {
                 int chunkVersion = in.readInt(); //currently unused
                 String chunkName = in.readUTF();
-                if (chunkMap.containsKey(chunkName)) {
-                    chunkMap.get(chunkName).add(host);
+                if (chunksToMachines.containsKey(chunkName)) {
+                    chunksToMachines.get(chunkName).add(host);
                 } else {
                     HashSet<String> machineSet = new HashSet<>();
                     machineSet.add(host);
-                    chunkMap.put(chunkName, machineSet);
+                    chunksToMachines.put(chunkName, machineSet);
                 }
                 if (isMajor) {
                     affirms.add(chunkName);
                 }
             }
             if (isMajor) {  // process deletions
-                for (String chunkName : chunkMap.keySet()) {
+                for (String chunkName : chunksToMachines.keySet()) {
                     // if global data says this host has it, but its latest major HB says it doesn't, delete
-                    if (chunkMap.get(chunkName).contains(host) && !affirms.contains(chunkName)) {
-                        chunkMap.get(chunkName).remove(host);
+                    if (chunksToMachines.get(chunkName).contains(host) && !affirms.contains(chunkName)) {
+                        chunksToMachines.get(chunkName).remove(host);
                     }
                 }
             }
             //update space and total chunks per machine
-            if (!chunkMachineMap.containsKey(host)) {
-                chunkMachineMap.put(host, new ChunkMachine(freeSpace, numChunks));
+            if (!machinesToMetrics.containsKey(host)) {
+                machinesToMetrics.put(host, new ChunkMachine(freeSpace, numChunks));
             } else {
-                chunkMachineMap.get(host).numChunks = numChunks;
-                chunkMachineMap.get(host).space = freeSpace;
+                machinesToMetrics.get(host).numChunks = numChunks;
+                machinesToMetrics.get(host).space = freeSpace;
             }
-        }
-
-        private void processClientRequest() {
-            //figure out if it's a read or write
-
         }
     }
 }
