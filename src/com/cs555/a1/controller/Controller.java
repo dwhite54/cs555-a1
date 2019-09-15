@@ -3,22 +3,28 @@ package com.cs555.a1.controller;
 import java.io.*;
 import java.net.*;
 import java.nio.channels.*;
-import java.util.Arrays;
-import java.util.HashMap;
-import java.util.HashSet;
+import java.util.*;
 import java.util.concurrent.Future;
 
+import static java.lang.Integer.min;
 import static java.util.Set.of;
 
 public class Controller {
-    static class ChunkMachine {
-        int space;
+    static class ChunkMachine implements Comparable<ChunkMachine> {
+        String name;
+        int freeSpace;
         int numChunks;
         HashSet<String> chunks;
-        ChunkMachine(int space, int numChunks){
-            this.space = space;
+        ChunkMachine(String name, int space, int numChunks){
+            this.name = name;
+            this.freeSpace = space;
             this.numChunks = numChunks;
             this.chunks = new HashSet<>();
+        }
+
+        @Override
+        public int compareTo(ChunkMachine c) {
+            return this.freeSpace - c.freeSpace; // descending order (biggest space first)
         }
     }
 
@@ -27,13 +33,12 @@ public class Controller {
     private AsynchronousSocketChannel clientChannel;
     private ServerSocket ss;
     private boolean shutdown = false;
-    private HashSet<String> machines;
     private HashMap<String, HashSet<String>> chunksToMachines;  //chunks to machines which contain them
-    private HashMap<String, ChunkMachine> machinesToMetrics = null; //machines to metrics (free space and total number)
+    private TreeSet<ChunkMachine> chunkMachines; //machines to metrics (free space and total number)
     
-    public Controller(int controllerPort, String controllerMachine, int chunkPort, String[] chunkMachines) throws IOException {
-        chunksToMachines = new HashMap<>();
-        this.machines.addAll(Arrays.asList(chunkMachines));
+    public Controller(int controllerPort) throws IOException {
+        this.chunksToMachines = new HashMap<>();
+        this.chunkMachines = new TreeSet<>();
         ss = new ServerSocket(controllerPort);
         final Thread mainThread = Thread.currentThread();
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
@@ -93,6 +98,8 @@ public class Controller {
         final DataInputStream in;
         final DataOutputStream out;
         final Socket s;
+        private int replicationFactor = 3;
+        private Random rng = new Random();
 
         // Constructor
         ControllerClientHandler(Socket s, DataInputStream in, DataOutputStream out)
@@ -111,19 +118,36 @@ public class Controller {
                 switch (in.readUTF()) {
                     case "write" :
                         fileName = in.readUTF();
+                        out.writeBoolean(true);
+                        ChunkMachine candidate = chunkMachines.last(); // largest freeSpace
+                        HashSet<String> writeMachines = chunksToMachines.get(fileName);
+                        if (writeMachines.isEmpty()) {
+                            int numServers = min(this.replicationFactor, chunkMachines.size());
+                            out.writeInt(numServers);
+                            for (int i = 0; i < numServers; i++) {
+                                assert candidate != null;
+                                out.writeUTF(candidate.name);
+                                candidate = chunkMachines.lower(candidate);
+                            }
+                        } else {
+                            out.writeInt(writeMachines.size());
+                            assert writeMachines.size() >= this.replicationFactor;  // else replication has failed
+                            for (String machine : writeMachines) {
+                                out.writeUTF(machine);
+                            }
+                        }
+                        break;
+                    case "read" :
+                        fileName = in.readUTF();
                         if (chunksToMachines.containsKey(fileName)) {
                             out.writeBoolean(true);
-                            HashSet<String> matchedMachines = chunksToMachines.get(fileName);
-                            //todo get top 3 machines by space
+                            out.writeUTF(getRandomElement(chunksToMachines.get(fileName), rng));
                         } else {
                             out.writeBoolean(false);
                         }
                         break;
-                    case "read" :
-
-                        break;
                     case "heartbeat" :
-                        processHeartbeat(host);
+                        processHeartbeat(host, in);
                         break;
                     default:
                         out.writeUTF("Invalid input");
@@ -142,7 +166,18 @@ public class Controller {
             }
         }
 
-        private void processHeartbeat(String host) throws IOException {
+        private String getRandomElement(HashSet<String> readMatches, Random rng) {
+            int randInt = rng.nextInt(readMatches.size());
+            int i = 0;
+            for (String machine : readMatches) {
+                if (i == randInt)
+                    return machine;
+                i++;
+            }
+            return "";
+        }
+
+        private void processHeartbeat(String host, DataInputStream in) throws IOException {
             boolean isMajor = in.readBoolean();
             int freeSpace = in.readInt();
             int numChunks = in.readInt();
@@ -170,12 +205,19 @@ public class Controller {
                     }
                 }
             }
-            //update space and total chunks per machine
-            if (!machinesToMetrics.containsKey(host)) {
-                machinesToMetrics.put(host, new ChunkMachine(freeSpace, numChunks));
-            } else {
-                machinesToMetrics.get(host).numChunks = numChunks;
-                machinesToMetrics.get(host).space = freeSpace;
+            // update chunk machine metadata (primarily for serving write requests)
+            boolean found = false;
+            for (ChunkMachine cm : chunkMachines) {
+                if (cm.name.equals(host)) {
+                    chunkMachines.remove(cm);
+                    cm.numChunks = numChunks;
+                    cm.freeSpace = freeSpace;
+                    chunkMachines.add(cm);
+                    found = true;
+                }
+            }
+            if (!found) {
+                chunkMachines.add(new ChunkMachine(host, freeSpace, numChunks));
             }
         }
     }

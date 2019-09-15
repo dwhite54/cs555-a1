@@ -1,10 +1,11 @@
 package com.cs555.a1.client;
 
-import java.io.DataInputStream;
-import java.io.DataOutputStream;
-import java.io.IOException;
+import javax.xml.crypto.Data;
+import java.io.*;
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.Socket;
+import java.net.UnknownHostException;
 import java.nio.ByteBuffer;
 import java.nio.channels.AsynchronousSocketChannel;
 import java.sql.Array;
@@ -18,6 +19,7 @@ public class Client {
     private HashMap<String, Future<Void>> chunkFutures = new HashMap<>();
     private InetSocketAddress controllerAddress;
     private HashMap<String, InetSocketAddress> chunkAddresses = new HashMap<>();
+    private int readLimit = 1000;  // if each chunk is 64KB (64 * 2^10) then this is about 66mB
 
     public Client(int controllerPort, String controllerMachine, int chunkPort, String[] chunkMachines) {
         controllerAddress = new InetSocketAddress(controllerMachine, controllerPort);
@@ -38,7 +40,8 @@ public class Client {
             input = scanner.nextLine();
             String[] inputs = input.split(" ");
             String out = "";
-            if (inputs.length > 0) {
+            if (inputs.length == 2) {
+                String fileName = inputs[1];
                 switch (inputs[0]) {
                     case "quit":
                     case "exit":
@@ -46,12 +49,55 @@ public class Client {
                         exit = true;
                         break;
                     case "read":
-                        out = fn(controllerAddress, "read");
-                        //pass this along to chunk server from out
+                        if (new File(fileName).exists()) {
+                            byte[][] chunks = chunkify(fileName);
+                            boolean limitReached = true;
+                            boolean failed = false;
+                            for (int i = 0; i < this.readLimit; i++) {
+                                String chunkFilename = String.format("%s_chunk%s", fileName, Integer.toString(i+1));
+                                try (
+                                        Socket controllerSocket = new Socket(controllerAddress.getHostName(), controllerAddress.getPort());
+                                        DataInputStream controllerIn = new DataInputStream(controllerSocket.getInputStream());
+                                        DataOutputStream controllerOut = new DataOutputStream(controllerSocket.getOutputStream());
+                                        ) {
+                                    controllerOut.writeUTF("read");
+                                    controllerOut.writeUTF(chunkFilename);
+                                    if (controllerIn.readBoolean()) {
+                                        String readServer = controllerIn.readUTF();
+                                        controllerIn.close();
+                                        controllerOut.close();
+                                        controllerSocket.close();
+                                        //now proceed to read from chunk server
+                                        InetSocketAddress chunkAddress = chunkAddresses.get(readServer);
+                                        try (
+                                                Socket chunkSocket = new Socket(chunkAddress.getHostName(), chunkAddress.getPort());
+                                                DataInputStream chunkIn = new DataInputStream(chunkSocket.getInputStream());
+                                                DataOutputStream chunkOut = new DataOutputStream(chunkSocket.getOutputStream());
+                                                ) {
+
+                                        } catch (IOException e) {
+                                            System.out.println("Couldn't open socket connection to " + chunkAddress.toString());
+                                            e.printStackTrace();
+                                        }
+
+                                    } else {
+                                        //read failed, either we finished reading or the file wasn't found
+                                        if (i == 0) {
+                                            System.out.println("Controller: File not found.");
+                                            failed = true;
+                                        }
+                                    }
+
+                                } catch (IOException e) {
+                                    System.out.println("Couldn't open socket connection to " + controllerAddress.toString());
+                                }
+                            }
+                        } else {
+                            System.out.println("Please specify a valid filename");
+                        }
                         break;
                     case "write":
-                        out = fn(controllerAddress, "write");
-                        //pass this along to chunk server from out
+
                         break;
                     default:
                         System.out.println("Invalid command");
@@ -60,33 +106,17 @@ public class Client {
                         break;
                 }
             } else {
-                System.out.println("Please enter a command");
+                System.out.println("Invalid command (should be \"verb object\", for example \"read foo.bar\"");
             }
-            if (!out.equals(""))
-                System.out.println("Received: " + out);
         }
     }
 
-    private String fn(InetSocketAddress address, String message) {
-        String received = "ERROR";
-        try
-        {
-            Socket s = new Socket(address.getHostName(), address.getPort());
+    private byte[][] chunkify(String fileName) {
+        return null; //TODO
+    }
 
-            DataInputStream dis = new DataInputStream(s.getInputStream());
-            DataOutputStream dos = new DataOutputStream(s.getOutputStream());
-
-            dos.writeUTF(message);
-            received = dis.readUTF();
-
-            // closing resources
-            dis.close();
-            dos.close();
-        } catch(Exception e){
-            e.printStackTrace();
-        }
-
-        return received;
+    private byte[] dechunkify(byte[][] chunks) {
+        return null; //TODO
     }
 
     private void printHelp() {
