@@ -1,19 +1,12 @@
 package com.cs555.a1.controller;
 
-import com.cs555.a1.Chunk;
 import com.cs555.a1.Helper;
-import com.cs555.a1.chunkserver.ChunkServer;
 
 import java.io.*;
 import java.net.*;
-import java.nio.channels.*;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
-import java.util.concurrent.Future;
-
-import static java.lang.Integer.min;
-import static java.util.Set.of;
 
 public class Controller {
 
@@ -35,9 +28,6 @@ public class Controller {
         }
     }
 
-    private AsynchronousServerSocketChannel serverChannel;
-    private Future<AsynchronousSocketChannel> acceptResult;
-    private AsynchronousSocketChannel clientChannel;
     private ServerSocket ss;
     private boolean shutdown = false;
     private HashMap<String, HashSet<String>> chunksToMachines;  //chunks to machines which contain them
@@ -133,7 +123,6 @@ public class Controller {
         final DataInputStream in;
         final DataOutputStream out;
         final Socket s;
-        private int replicationFactor = 3;
         private Random rng = new Random();
 
         // Constructor
@@ -156,7 +145,7 @@ public class Controller {
                         ChunkMachine candidate = chunkMachines.last(); // largest freeSpace
                         HashSet<String> writeMachines = chunksToMachines.get(fileName);
                         if (writeMachines.isEmpty()) {
-                            int numServers = min(this.replicationFactor, chunkMachines.size());
+                            int numServers = Integer.min(Helper.replicationFactor, chunkMachines.size());
                             out.writeInt(numServers);
                             for (int i = 0; i < numServers; i++) {
                                 assert candidate != null;
@@ -165,7 +154,7 @@ public class Controller {
                             }
                         } else {
                             out.writeInt(writeMachines.size());
-                            assert writeMachines.size() >= this.replicationFactor;  // else replication has failed
+                            assert writeMachines.size() >= Helper.replicationFactor;  // else replication has failed
                             for (String machine : writeMachines) {
                                 out.writeUTF(machine);
                             }
@@ -175,7 +164,8 @@ public class Controller {
                         fileName = in.readUTF();
                         if (chunksToMachines.containsKey(fileName)) {
                             out.writeBoolean(true);
-                            out.writeUTF(getRandomElement(chunksToMachines.get(fileName), rng));
+                            HashSet<String> readMatches = chunksToMachines.get(fileName);
+                            out.writeUTF(getRandomElement(readMatches, rng));
                         } else {
                             out.writeBoolean(false);
                         }
@@ -187,15 +177,9 @@ public class Controller {
                         out.writeUTF("Invalid input");
                         break;
                 }
-            } catch (IOException e) {
-                e.printStackTrace();
-            }
-
-            try
-            {
                 this.in.close();
                 this.out.close();
-            } catch(IOException e){
+            } catch (IOException e) {
                 e.printStackTrace();
             }
         }

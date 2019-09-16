@@ -4,17 +4,12 @@ import com.cs555.a1.Helper;
 
 import java.io.*;
 import java.net.Socket;
-import java.security.NoSuchAlgorithmException;
 import java.util.*;
-import java.util.concurrent.Future;
 
 public class Client {
     private final int chunkPort;
     private final int controllerPort;
     private final String controllerMachine;
-    //private AsynchronousSocketChannel controllerClient;
-    //private HashMap<String, AsynchronousSocketChannel> chunkClients = new HashMap<String, AsynchronousSocketChannel>();
-    private HashMap<String, Future<Void>> chunkFutures = new HashMap<>();
 
     public Client(int controllerPort, String controllerMachine, int chunkPort) {
         this.controllerMachine = controllerMachine;
@@ -31,7 +26,6 @@ public class Client {
             System.out.print(">");
             input = scanner.nextLine();
             String[] inputs = input.split(" ");
-            String out = "";
             switch (inputs[0]) {
                 case "quit":
                 case "exit":
@@ -59,8 +53,10 @@ public class Client {
 
     private void processWrite(String fileName) {
         ArrayList<byte[]> chunks = chunkify(fileName);
-        if (chunks == null)
+        if (chunks == null) {
+            System.out.println("Error reading file from disk");
             return;
+        }
         for (int i = 0; i < chunks.size(); i++) {
             String chunkFilename = String.format("%s_chunk%s", fileName, Integer.toString(i+1));
             try (
@@ -78,82 +74,40 @@ public class Client {
                 controllerOut.close();
                 controllerSocket.close();
                 //now proceed to write to chunk server (with forwarding info)
-                if (!Helper.writeToChunkServerWithForward(chunks.get(i), chunkFilename, chunkServers, chunkPort))
-                    break;
+                if (!Helper.writeToChunkServerWithForward(chunks.get(i), chunkFilename, chunkServers, chunkPort)) {
+                    System.out.println("Error writing to chunk server");
+                    return;
+                }
+                System.out.println("Success");
             } catch (IOException e) {
+                System.out.println("Error opening socket connection.");
                 e.printStackTrace();
             }
         }
     }
 
     private void processRead(String fileName) {
-        if (new File(fileName).exists()) {
-            ArrayList<byte[]> chunks = new ArrayList<>();
-            boolean limitReached = true;
-            boolean failed = false;
-            for (int i = 0; i < Helper.readLimit; i++) {
-                byte[] readChunk;
-                String chunkFilename = String.format("%s_chunk%s", fileName, Integer.toString(i+1));
-                try (
-                        Socket controllerSocket = new Socket(controllerMachine, controllerPort);
-                        DataInputStream controllerIn = new DataInputStream(controllerSocket.getInputStream());
-                        DataOutputStream controllerOut = new DataOutputStream(controllerSocket.getOutputStream())
-                ) {
-                    controllerOut.writeUTF("read");
-                    controllerOut.writeUTF(chunkFilename);
-                    if (controllerIn.readBoolean()) {
-                        String readServer = controllerIn.readUTF();
-                        controllerIn.close();
-                        controllerOut.close();
-                        controllerSocket.close();
-                        //now proceed to read from chunk server
-                        try (
-                                Socket chunkSocket = new Socket(readServer, chunkPort);
-                                DataInputStream chunkIn = new DataInputStream(chunkSocket.getInputStream());
-                                DataOutputStream chunkOut = new DataOutputStream(chunkSocket.getOutputStream())
-                        ) {
-                            chunkOut.writeUTF(chunkFilename);
-                            int readChunkSize = chunkIn.readInt();
-                            readChunk = new byte[readChunkSize];
-                            int bytesRead = chunkIn.read(readChunk);
-                            if (readChunkSize != bytesRead) {
-                                System.out.println("Failed reading file from chunk server: " + chunkFilename);
-                                failed = true;
-                                break;
-                            } else {
-                                chunks.add(readChunk);
-                                limitReached = false;
-                            }
-                        } catch (IOException e) {
-                            System.out.println("Couldn't open socket connection to " + readServer + ":" + chunkPort);
-                            e.printStackTrace();
-                            failed = true;
-                            break;
-                        }
-
-                    } else {
-                        if (i == 0) {  // file not found
-                            System.out.println("Controller: File not found.");
-                            failed = true;
-                            break;
-                        } else {  // read finished
-                            break;
-                        }
-                    }
-
-                } catch (IOException e) {
-                    System.out.println("Couldn't open socket connection to " + controllerMachine + ":" + controllerPort);
+        try {
+            if (new File(fileName).exists()) {
+                ArrayList<byte[]> chunks = new ArrayList<>();
+                for (int i = 0; i < Helper.readLimit; i++) {
+                    byte[] readChunk;
+                    String chunkFilename = String.format("%s_chunk%s", fileName, Integer.toString(i + 1));
+                    String readServer = Helper.readFromController(controllerMachine, controllerPort, chunkFilename);
+                    readChunk = Helper.readFromChunkServer(fileName, readServer, chunkPort);
+                    chunks.add(readChunk);
                 }
-            }
-            if (limitReached) {
-                System.out.println("File too large (maximum number of chunks exceeded)");
-                failed = true;
-            }
-            if (!failed) {
+                if (chunks.size() == Helper.readLimit) {
+                    System.out.println("File too large (maximum number of chunks exceeded)");
+                    return;
+                }
                 dechunkify(fileName, chunks); // writes file to disk
+                System.out.println("Success");
+            } else {
+                System.out.println("Please specify a valid filename");
             }
-        } else {
-            System.out.println("Please specify a valid filename");
+        } catch (IOException e) {
+            e.printStackTrace();
         }
     }
 

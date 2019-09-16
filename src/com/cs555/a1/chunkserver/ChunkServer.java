@@ -6,8 +6,6 @@ import com.cs555.a1.Helper;
 import java.io.*;
 import java.net.ServerSocket;
 import java.net.Socket;
-import java.nio.channels.AsynchronousServerSocketChannel;
-import java.nio.channels.AsynchronousSocketChannel;
 import java.nio.file.Paths;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -16,16 +14,11 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
-import java.util.concurrent.Future;
 
 public class ChunkServer {
     private int controllerPort;
     private String controllerMachine;
     private int chunkPort;
-    private String[] chunkMachines;
-    private AsynchronousServerSocketChannel serverChannel;
-    private Future<AsynchronousSocketChannel> acceptResult;
-    private AsynchronousSocketChannel clientChannel;
     private ServerSocket ss;
     private boolean shutdown = false;
     private Instant start = Instant.now();
@@ -33,11 +26,10 @@ public class ChunkServer {
     //for each chunk we need version, and 8 SHA-1 hashes (1 per 8KB),
     private HashMap<String, Chunk> chunks;
 
-    public ChunkServer(int controllerPort, String controllerMachine, int chunkPort, String[] chunkMachines) throws IOException {
+    public ChunkServer(int controllerPort, String controllerMachine, int chunkPort) throws IOException {
         this.controllerPort = controllerPort;
         this.controllerMachine = controllerMachine;
         this.chunkPort = chunkPort;
-        this.chunkMachines = chunkMachines;
         this.chunks = new HashMap<>();
         ss = new ServerSocket(controllerPort);
         final Thread mainThread = Thread.currentThread();
@@ -104,24 +96,11 @@ public class ChunkServer {
     }
 
     //from https://stackoverflow.com/questions/4895523/java-string-to-sha1
-    private static String hexify(byte[] b) {
-        StringBuilder result = new StringBuilder();
-        for (byte value : b) {
-            result.append(Integer.toString((value & 0xff) + 0x100, 16).substring(1));
-        }
-        return result.toString();
-    }
-
-    //from https://stackoverflow.com/questions/4895523/java-string-to-sha1
     private byte[] getSHA1(byte[] chunk) throws NoSuchAlgorithmException {
         MessageDigest crypt = MessageDigest.getInstance("SHA-1");
         crypt.reset();
         crypt.update(chunk);
         return crypt.digest();
-    }
-
-    private String getSHA1Hex(byte[] chunk) throws NoSuchAlgorithmException {
-        return hexify(getSHA1(chunk));
     }
 
     private class ChunkControllerHandler extends Thread {
@@ -194,22 +173,20 @@ public class ChunkServer {
                         ArrayList<String> forwards = new ArrayList<>();
                         for (int i = 0; i < numForwards; i++)
                             forwards.add(in.readUTF());
-                        Helper.writeToChunkServerWithForward(fileContents, fileName, forwards, chunkPort);
-                        boolean result = writeChunk(fileName, fileContents, forwards);
-                        out.writeBoolean(result);
+                        boolean isForwarded = Helper.writeToChunkServerWithForward(fileContents, fileName, forwards, chunkPort);
+                        boolean isWritten = writeChunk(fileName, fileContents);
+                        out.writeBoolean(isForwarded && isWritten);
                         break;
                     case "read" :
                         fileName = in.readUTF();
                         if (chunks.containsKey(fileName)) {
                             fileContents = readChunk(fileName);
-                            if (fileContents != null) {
-                                out.writeInt(fileContents.length);
-                                out.write(fileContents);
-                            } else {
-                                handleFailure(fileName);
+                            if (fileContents == null) {
+                                String readServer = Helper.readFromController(controllerMachine, controllerPort, fileName);
+                                fileContents = Helper.readFromChunkServer(fileName, readServer, chunkPort);
                             }
-                        //} else if (new File(fileName).exists()){
-                            // this would be to handle when the file exists but our in-memory metadata says it doesn't (server crashed)
+                            out.writeInt(fileContents.length);
+                            out.write(fileContents);
                         } else {
                             out.writeInt(0);
                         }
@@ -221,50 +198,11 @@ public class ChunkServer {
                         out.writeUTF("Invalid input");
                         break;
                 }
-            } catch (IOException e) {
-                e.printStackTrace();
-            }
-
-            try
-            {
                 this.in.close();
                 this.out.close();
-            } catch(IOException e){
-                e.printStackTrace();
-            }
-        }
-
-        private void handleFailure(String fileName) {
-            try (
-                    Socket controllerSocket = new Socket(controllerMachine, controllerPort);
-                    DataInputStream controllerIn = new DataInputStream(controllerSocket.getInputStream());
-                    DataOutputStream controllerOut = new DataOutputStream(controllerSocket.getOutputStream())
-            ) {
-                controllerOut.writeUTF("failure"); // a special case of read which ignores the requesting machine
-                controllerOut.writeUTF(fileName);
-                String chunkServerName = controllerIn.readUTF();
-
-                //TODO handle failure by 1) tell controller, getting alt CS 2) get alt CS file 3) send to client
             } catch (IOException e) {
                 e.printStackTrace();
             }
-        }
-
-        public byte[] readFromChunkServer(String chunkFilename, String chunkServer, int chunkPort) {
-            byte[] chunk = null;
-            try (
-                    Socket chunkSocket = new Socket(chunkServer, chunkPort);
-                    DataInputStream chunkIn = new DataInputStream(chunkSocket.getInputStream());
-                    DataOutputStream chunkOut = new DataOutputStream(chunkSocket.getOutputStream())
-            ) {
-                chunkOut.writeUTF(chunkFilename);
-                //TODO
-            } catch (IOException e) {
-                System.out.println("Couldn't open socket connection to " + chunkServer + ":" + chunkPort);
-                e.printStackTrace();
-                return null;
-            }
-            return chunk;
         }
 
         private byte[] readChunk(String fileName) {
@@ -318,7 +256,7 @@ public class ChunkServer {
             return true;
         }
 
-        private boolean writeChunk(String fileName, byte[] contents, ArrayList<String> forwards) {
+        private boolean writeChunk(String fileName, byte[] contents) {
             try {
                 File file = new File(Paths.get(Helper.chunkHome, fileName).toString());
                 if (file.exists()) {

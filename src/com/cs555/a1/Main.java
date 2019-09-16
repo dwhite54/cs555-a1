@@ -81,7 +81,7 @@ public class Main {
             Controller controller = new Controller(controllerPort, chunkPort);
             controller.run();
         } else if (isChunkServer) {
-            ChunkServer chunkServer = new ChunkServer(controllerPort, controllerMachine, chunkPort, chunkMachines);
+            ChunkServer chunkServer = new ChunkServer(controllerPort, controllerMachine, chunkPort);
             chunkServer.run();
         }
 
