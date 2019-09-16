@@ -74,11 +74,11 @@ public class Main {
         if (isClient) {
             //TODO check if chunk servers/controller running before starting!! (allow multiple clients)
             spawnProcesses(controllerPort, controllerMachine, chunkPort, chunkMachines);
-            Client client = new Client(controllerPort, controllerMachine, chunkPort, chunkMachines);
+            Client client = new Client(controllerPort, controllerMachine, chunkPort);
             client.run();
         }
         else if (isController) { // we now know that this was a child process, configured to start a controller proc
-            Controller controller = new Controller(controllerPort, controllerMachine);
+            Controller controller = new Controller(controllerPort, chunkPort);
             controller.run();
         } else if (isChunkServer) {
             ChunkServer chunkServer = new ChunkServer(controllerPort, controllerMachine, chunkPort, chunkMachines);

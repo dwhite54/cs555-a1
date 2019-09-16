@@ -1,8 +1,14 @@
 package com.cs555.a1.controller;
 
+import com.cs555.a1.Chunk;
+import com.cs555.a1.Helper;
+import com.cs555.a1.chunkserver.ChunkServer;
+
 import java.io.*;
 import java.net.*;
 import java.nio.channels.*;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.Future;
 
@@ -10,6 +16,7 @@ import static java.lang.Integer.min;
 import static java.util.Set.of;
 
 public class Controller {
+
     static class ChunkMachine implements Comparable<ChunkMachine> {
         String name;
         int freeSpace;
@@ -35,10 +42,13 @@ public class Controller {
     private boolean shutdown = false;
     private HashMap<String, HashSet<String>> chunksToMachines;  //chunks to machines which contain them
     private TreeSet<ChunkMachine> chunkMachines; //machines to metrics (free space and total number)
+    private Instant start = Instant.now();
+    private int chunkPort;
     
-    public Controller(int controllerPort) throws IOException {
+    public Controller(int controllerPort, int chunkPort) throws IOException {
         this.chunksToMachines = new HashMap<>();
         this.chunkMachines = new TreeSet<>();
+        this.chunkPort = chunkPort;
         ss = new ServerSocket(controllerPort);
         final Thread mainThread = Thread.currentThread();
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
@@ -63,8 +73,14 @@ public class Controller {
         {
             Socket s = null;
             Thread.sleep(100);
+            long minsElapsed = Duration.between(start, Instant.now()).toSeconds();
             try
             {
+                 if (minsElapsed % 30 == 0) {
+                    //send heartbeat to each chunk server
+                    Thread mT = new ControllerChunkHandler();
+                    mT.start();
+                }
                 // socket object to receive incoming client requests
                 s = ss.accept();
 
@@ -88,6 +104,25 @@ public class Controller {
                     s.close();
                 }
                 e.printStackTrace();
+            }
+        }
+    }
+
+    private class ControllerChunkHandler extends Thread {
+        @Override
+        public void run() {
+            for (ChunkMachine chunkMachine : chunkMachines) {
+                try (
+                        Socket s = new Socket(chunkMachine.name, chunkPort);
+                        DataOutputStream out = new DataOutputStream(s.getOutputStream());
+                        DataInputStream in = new DataInputStream(s.getInputStream())
+                        ){
+                    out.writeUTF("heartbeat");
+                    if (!in.readBoolean())
+                        chunkMachines.remove(chunkMachine);
+                } catch (IOException e) {
+                    chunkMachines.remove(chunkMachine);
+                }
             }
         }
     }
@@ -118,7 +153,6 @@ public class Controller {
                 switch (in.readUTF()) {
                     case "write" :
                         fileName = in.readUTF();
-                        out.writeBoolean(true);
                         ChunkMachine candidate = chunkMachines.last(); // largest freeSpace
                         HashSet<String> writeMachines = chunksToMachines.get(fileName);
                         if (writeMachines.isEmpty()) {
