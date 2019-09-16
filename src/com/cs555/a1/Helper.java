@@ -23,6 +23,7 @@ public class Helper {
                 DataInputStream chunkIn = new DataInputStream(chunkSocket.getInputStream());
                 DataOutputStream chunkOut = new DataOutputStream(chunkSocket.getOutputStream())
         ) {
+            chunkOut.writeUTF("write");
             chunkOut.writeUTF(chunkFilename);
             chunkOut.writeInt(chunk.length);
             chunkOut.write(chunk);

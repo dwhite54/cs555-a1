@@ -132,9 +132,11 @@ public class ChunkServer {
 
         @Override
         public void run() {
-            try {
-                Socket s = new Socket(controllerMachine, controllerPort);
-                DataOutputStream out = new DataOutputStream(s.getOutputStream());
+            try (
+                    Socket s = new Socket(controllerMachine, controllerPort);
+                    DataOutputStream out = new DataOutputStream(s.getOutputStream())
+                    ) {
+                out.writeUTF("heartbeat");
                 out.writeBoolean(isMajor);
                 out.writeInt(Helper.space);
                 out.writeInt(chunks.size());
@@ -155,7 +157,6 @@ public class ChunkServer {
                         out.writeInt(chunk.version);
                     }
                 }
-                out.close();
             } catch (IOException e) {
                 e.printStackTrace();
                 dumpStack();
@@ -205,16 +206,16 @@ public class ChunkServer {
                                 out.writeInt(fileContents.length);
                                 out.write(fileContents);
                             } else {
-                                //TODO handle failure by 1) tell controller, getting alt CS 2) get alt CS file 3) send to client
+                                handleFailure(fileName);
                             }
-                        } else if (new File(fileName).exists()){
-                            // TODO handle when the file exists but our in-memory metadata says it doesn't (server crashed)
+                        //} else if (new File(fileName).exists()){
+                            // this would be to handle when the file exists but our in-memory metadata says it doesn't (server crashed)
                         } else {
                             out.writeInt(0);
                         }
                         break;
                     case "heartbeat" :  // tell the controller we are still here
-                        out.writeBoolean(true); //TODO send false when the chunk server is undergoing repair?
+                        out.writeBoolean(true);
                         break;
                     default:
                         out.writeUTF("Invalid input");
@@ -231,6 +232,39 @@ public class ChunkServer {
             } catch(IOException e){
                 e.printStackTrace();
             }
+        }
+
+        private void handleFailure(String fileName) {
+            try (
+                    Socket controllerSocket = new Socket(controllerMachine, controllerPort);
+                    DataInputStream controllerIn = new DataInputStream(controllerSocket.getInputStream());
+                    DataOutputStream controllerOut = new DataOutputStream(controllerSocket.getOutputStream())
+            ) {
+                controllerOut.writeUTF("failure"); // a special case of read which ignores the requesting machine
+                controllerOut.writeUTF(fileName);
+                String chunkServerName = controllerIn.readUTF();
+
+                //TODO handle failure by 1) tell controller, getting alt CS 2) get alt CS file 3) send to client
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        }
+
+        public byte[] readFromChunkServer(String chunkFilename, String chunkServer, int chunkPort) {
+            byte[] chunk = null;
+            try (
+                    Socket chunkSocket = new Socket(chunkServer, chunkPort);
+                    DataInputStream chunkIn = new DataInputStream(chunkSocket.getInputStream());
+                    DataOutputStream chunkOut = new DataOutputStream(chunkSocket.getOutputStream())
+            ) {
+                chunkOut.writeUTF(chunkFilename);
+                //TODO
+            } catch (IOException e) {
+                System.out.println("Couldn't open socket connection to " + chunkServer + ":" + chunkPort);
+                e.printStackTrace();
+                return null;
+            }
+            return chunk;
         }
 
         private byte[] readChunk(String fileName) {
