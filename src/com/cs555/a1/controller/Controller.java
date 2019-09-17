@@ -32,7 +32,6 @@ public class Controller {
     private boolean shutdown = false;
     private HashMap<String, HashSet<String>> chunksToMachines;  //chunks to machines which contain them
     private TreeSet<ChunkMachine> chunkMachines; //machines to metrics (free space and total number)
-    private Instant start = Instant.now();
     private int chunkPort;
     
     public Controller(int controllerPort, int chunkPort) throws IOException {
@@ -56,21 +55,17 @@ public class Controller {
         shutdown = true;
     }
 
-    public void run() throws IOException, InterruptedException {
+    public void run() throws IOException {
         // running infinite loop for getting
         // client request
+        Thread mT = new ControllerChunkHandler();
+        mT.start();
         while (!shutdown)
         {
             Socket s = null;
-            Thread.sleep(100);
-            long minsElapsed = Duration.between(start, Instant.now()).toSeconds();
             try
             {
-                 if (minsElapsed % 30 == 0) {
-                    //send heartbeat to each chunk server
-                    Thread mT = new ControllerChunkHandler();
-                    mT.start();
-                }
+
                 // socket object to receive incoming client requests
                 s = ss.accept();
 
@@ -99,19 +94,33 @@ public class Controller {
     }
 
     private class ControllerChunkHandler extends Thread {
+
         @Override
         public void run() {
-            for (ChunkMachine chunkMachine : chunkMachines) {
-                try (
-                        Socket s = new Socket(chunkMachine.name, chunkPort);
-                        DataOutputStream out = new DataOutputStream(s.getOutputStream());
-                        DataInputStream in = new DataInputStream(s.getInputStream())
-                        ){
-                    out.writeUTF("heartbeat");
-                    if (!in.readBoolean())
-                        chunkMachines.remove(chunkMachine);
-                } catch (IOException e) {
-                    chunkMachines.remove(chunkMachine);
+            Instant start = Instant.now();
+            while (true) {
+                try {
+                    Thread.sleep(100);
+                } catch (InterruptedException e) {
+                    System.out.println("Heartbeat thread interrupted, stopping");
+                    return;
+                }
+                if (Duration.between(start, Instant.now()).toSeconds() > Helper.MinorHeartbeatSeconds) {
+                    start = Instant.now();
+                    for (ChunkMachine chunkMachine : chunkMachines) {
+                        try (
+                                Socket s = new Socket(chunkMachine.name, chunkPort);
+                                DataOutputStream out = new DataOutputStream(s.getOutputStream());
+                                DataInputStream in = new DataInputStream(s.getInputStream())
+                        ) {
+                            out.writeUTF("heartbeat");
+                            System.out.println("Sending heartbeat to chunk server");
+                            if (!in.readBoolean())
+                                chunkMachines.remove(chunkMachine);
+                        } catch (IOException e) {
+                            chunkMachines.remove(chunkMachine);
+                        }
+                    }
                 }
             }
         }
@@ -171,6 +180,7 @@ public class Controller {
                         }
                         break;
                     case "heartbeat" :
+                        System.out.println("processing heartbeat from " + host);
                         processHeartbeat(host, in);
                         break;
                     default:

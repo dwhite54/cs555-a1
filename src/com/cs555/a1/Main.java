@@ -56,6 +56,9 @@ public class Main {
                                 break;
                             case "chunkserver":
                                 isChunkServer = true;
+                                break;
+                            default:
+                                throw new IllegalArgumentException("Invalid mode");
                         }
                         break;
                 }

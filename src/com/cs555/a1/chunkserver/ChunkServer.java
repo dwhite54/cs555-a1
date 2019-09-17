@@ -21,7 +21,6 @@ public class ChunkServer {
     private int chunkPort;
     private ServerSocket ss;
     private boolean shutdown = false;
-    private Instant start = Instant.now();
     //need to store the chunks that are at this server (filename with underscore and integer appended),
     //for each chunk we need version, and 8 SHA-1 hashes (1 per 8KB),
     private HashMap<String, Chunk> chunks;
@@ -31,7 +30,7 @@ public class ChunkServer {
         this.controllerMachine = controllerMachine;
         this.chunkPort = chunkPort;
         this.chunks = new HashMap<>();
-        ss = new ServerSocket(controllerPort);
+        ss = new ServerSocket(chunkPort);
         final Thread mainThread = Thread.currentThread();
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             try {
@@ -51,23 +50,14 @@ public class ChunkServer {
     public void run() throws IOException, InterruptedException {
         // running infinite loop for getting
         // client request
+        Thread mT = new ChunkControllerHandler();
+        mT.start();
         while (!shutdown)
         {
             Socket s = null;
             Thread.sleep(100);
-            long minsElapsed = Duration.between(start, Instant.now()).toSeconds();
             try
             {
-                if (minsElapsed % 300 == 0){
-                    //send major heartbeat
-                    Thread MT = new ChunkControllerHandler(true);
-                    MT.start();
-                } else if (minsElapsed % 30 == 0) {
-                    //send minor heartbeat
-                    Thread mT = new ChunkControllerHandler(false);
-                    mT.start();
-                }
-
                 // socket object to receive incoming client requests
                 s = ss.accept();
 
@@ -104,41 +94,55 @@ public class ChunkServer {
     }
 
     private class ChunkControllerHandler extends Thread {
-        private boolean isMajor;
-        ChunkControllerHandler(boolean isMajor) {
-            this.isMajor = isMajor;
-        }
-
         @Override
         public void run() {
-            try (
-                    Socket s = new Socket(controllerMachine, controllerPort);
-                    DataOutputStream out = new DataOutputStream(s.getOutputStream())
+            Instant start = Instant.now();
+            int numMinor = 0;
+            boolean isMajor = false;
+            while (true) {
+                try {
+                    Thread.sleep(100);
+                } catch (InterruptedException e) {
+                    System.out.println("Heartbeat thread interrupted, stopping");
+                    return;
+                }
+                if (Duration.between(start, Instant.now()).toSeconds() > Helper.MinorHeartbeatSeconds) {
+                    start = Instant.now();
+                    if (numMinor == Helper.MajorHeartbeatSeconds / Helper.MinorHeartbeatSeconds) isMajor = true;
+                    System.out.println("Sending heartbeat to controller, ismajor = " + Boolean.toString(isMajor));
+                    try (
+                            Socket s = new Socket(controllerMachine, controllerPort);
+                            DataOutputStream out = new DataOutputStream(s.getOutputStream())
                     ) {
-                out.writeUTF("heartbeat");
-                out.writeBoolean(isMajor);
-                out.writeInt(Helper.space);
-                out.writeInt(chunks.size());
-                int numChunks = chunks.size();
-                if (!isMajor) {  // find out how many we will write--this is ugly and could be improved! RACE CONDITION??
-                    for (String key : chunks.keySet()) {
-                        if (chunks.get(key).isNew) {
-                            numChunks++;
+                        out.writeUTF("heartbeat");
+                        out.writeBoolean(isMajor);
+                        out.writeInt(Helper.space);
+                        out.writeInt(chunks.size());
+                        int numChunks = chunks.size();
+                        if (!isMajor) {  // find out how many we will write--this is ugly and could be improved! RACE CONDITION??
+                            for (String key : chunks.keySet()) {
+                                if (chunks.get(key).isNew) {
+                                    numChunks++;
+                                }
+                            }
                         }
+                        out.writeInt(numChunks);
+                        for (String key : chunks.keySet()) {
+                            Chunk chunk = chunks.get(key);
+                            if (chunk.isNew || isMajor) {
+                                chunk.isNew = false;
+                                out.writeUTF(chunk.fileName);
+                                out.writeInt(chunk.version);
+                            }
+                        }
+                    } catch (IOException e) {
+                        e.printStackTrace();
+                        dumpStack();
+                    } finally {
+                        isMajor = false;
+                        numMinor++;
                     }
                 }
-                out.writeInt(numChunks);
-                for (String key : chunks.keySet()) {
-                    Chunk chunk = chunks.get(key);
-                    if (chunk.isNew || isMajor) {
-                        chunk.isNew = false;
-                        out.writeUTF(chunk.fileName);
-                        out.writeInt(chunk.version);
-                    }
-                }
-            } catch (IOException e) {
-                e.printStackTrace();
-                dumpStack();
             }
         }
     }
@@ -192,6 +196,7 @@ public class ChunkServer {
                         }
                         break;
                     case "heartbeat" :  // tell the controller we are still here
+                        System.out.println("Responding to controller heartbeat");
                         out.writeBoolean(true);
                         break;
                     default:

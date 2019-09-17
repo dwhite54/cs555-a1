@@ -14,7 +14,9 @@ public class Helper {
     public static String chunkHome = "/tmp/dwhite54/chunks";
     public static int space = 100;
     public static int readLimit = 1000;  // if each chunk is 64KB (64 * 2^10) then this is about 66mB
-    public static int replicationFactor = 3;
+    public static int replicationFactor = 1;
+    public static int MajorHeartbeatSeconds = 30;
+    public static int MinorHeartbeatSeconds = 3;
 
     public static boolean writeToChunkServerWithForward(byte[] chunk, String chunkFilename, ArrayList<String> chunkServers, int chunkPort) {
         String chunkServer = chunkServers.get(0);
