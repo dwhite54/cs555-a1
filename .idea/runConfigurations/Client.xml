@@ -1,0 +1,17 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="Client" type="Application" factoryName="Application">
+    <option name="INCLUDE_PROVIDED_SCOPE" value="true" />
+    <option name="MAIN_CLASS_NAME" value="com.cs555.a1.Main" />
+    <module name="cs555-a1" />
+    <option name="PROGRAM_PARAMETERS" value="--mode client --controller-port 50592 --controller-machine green --chunk-port 50593 --chunk-machines yellow,cyan,pink,magenta" />
+    <extension name="coverage">
+      <pattern>
+        <option name="PATTERN" value="com.cs555.a1.*" />
+        <option name="ENABLED" value="true" />
+      </pattern>
+    </extension>
+    <method v="2">
+      <option name="Make" enabled="true" />
+    </method>
+  </configuration>
+</component>

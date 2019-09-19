@@ -109,7 +109,7 @@ public class Client {
                 }
                 if (chunks.size() == Helper.readLimit) {
                     System.out.println("File too large (maximum number of chunks exceeded)");
-                    return;
+                    return isFailure;
                 }
                 dechunkify(fileName, chunks); // writes file to disk
                 isFailure = false;
@@ -120,7 +120,7 @@ public class Client {
         } catch (IOException e) {
             e.printStackTrace();
         }
-        return isFailure
+        return isFailure;
     }
 
     private ArrayList<byte[]> chunkify(String fileName) {
