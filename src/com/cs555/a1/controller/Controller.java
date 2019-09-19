@@ -14,29 +14,55 @@ public class Controller {
         String name;
         int freeSpace;
         int numChunks;
-        HashSet<String> chunks;
         ChunkMachine(String name, int space, int numChunks){
             this.name = name;
             this.freeSpace = space;
             this.numChunks = numChunks;
-            this.chunks = new HashSet<>();
+        }
+
+        @Override
+        public boolean equals(Object obj) {
+            if (obj == null) {
+                return false;
+            }
+
+            if (!ChunkMachine.class.isAssignableFrom(obj.getClass())) {
+                return false;
+            }
+
+            final ChunkMachine other = (ChunkMachine) obj;
+            if ((this.name == null) ? (other.name != null) : !this.name.equals(other.name)) {
+                return false;
+            }
+
+            return true;
+        }
+
+        @Override
+        public int hashCode() {
+            return name.hashCode();
         }
 
         @Override
         public int compareTo(ChunkMachine c) {
             return this.freeSpace - c.freeSpace; // descending order (biggest space first)
         }
+
+        @Override
+        public String toString() {
+            return String.format("name: %s, freeSpace: %s, numChunks: %s", name, freeSpace, numChunks);
+        }
     }
 
     private ServerSocket ss;
     private boolean shutdown = false;
     private HashMap<String, HashSet<String>> chunksToMachines;  //chunks to machines which contain them
-    private TreeSet<ChunkMachine> chunkMachines; //machines to metrics (free space and total number)
+    private ArrayList<ChunkMachine> chunkMachines; //machines to metrics (free space and total number)
     private int chunkPort;
     
     public Controller(int controllerPort, int chunkPort) throws IOException {
         this.chunksToMachines = new HashMap<>();
-        this.chunkMachines = new TreeSet<>();
+        this.chunkMachines = new ArrayList<>();
         this.chunkPort = chunkPort;
         ss = new ServerSocket(controllerPort);
         final Thread mainThread = Thread.currentThread();
@@ -114,10 +140,12 @@ public class Controller {
                                 DataInputStream in = new DataInputStream(s.getInputStream())
                         ) {
                             out.writeUTF("heartbeat");
-                            System.out.println("Sending heartbeat to chunk server");
-                            if (!in.readBoolean())
-                                chunkMachines.remove(chunkMachine);
+                            System.out.println("Sending heartbeat to chunk server " + chunkMachine.name);
+                            if (!in.readBoolean()) {
+                                throw new IOException();
+                            }
                         } catch (IOException e) {
+                            System.out.println("Chunk server failure detected: " + chunkMachine);
                             chunkMachines.remove(chunkMachine);
                         }
                     }
@@ -151,15 +179,17 @@ public class Controller {
                 switch (in.readUTF()) {
                     case "write" :
                         fileName = in.readUTF();
-                        ChunkMachine candidate = chunkMachines.last(); // largest freeSpace
+                        if (chunkMachines.isEmpty()) {
+                            out.writeBoolean(false);
+                            break;
+                        }
+                        out.writeBoolean(true);
                         HashSet<String> writeMachines = chunksToMachines.get(fileName);
-                        if (writeMachines.isEmpty()) {
+                        if (writeMachines == null || writeMachines.isEmpty()) {
                             int numServers = Integer.min(Helper.replicationFactor, chunkMachines.size());
                             out.writeInt(numServers);
                             for (int i = 0; i < numServers; i++) {
-                                assert candidate != null;
-                                out.writeUTF(candidate.name);
-                                candidate = chunkMachines.lower(candidate);
+                                out.writeUTF(chunkMachines.get(chunkMachines.size() - 1 - i).name);
                             }
                         } else {
                             out.writeInt(writeMachines.size());
@@ -171,10 +201,19 @@ public class Controller {
                         break;
                     case "read" :
                         fileName = in.readUTF();
+                        if (in.readBoolean()) { //isFailure
+                             // unused (chunk server self-recovers)
+                        }
                         if (chunksToMachines.containsKey(fileName)) {
-                            out.writeBoolean(true);
-                            HashSet<String> readMatches = chunksToMachines.get(fileName);
-                            out.writeUTF(getRandomElement(readMatches, rng));
+                            HashSet<String> readMatches = new HashSet<>(chunksToMachines.get(fileName));
+                            if (in.readBoolean()) //is chunk server?
+                                readMatches.remove(host);
+                            if (readMatches.isEmpty()) {
+                                out.writeBoolean(false);
+                            } else {
+                                out.writeBoolean(true);
+                                out.writeUTF(getRandomElement(readMatches, rng));
+                            }
                         } else {
                             out.writeBoolean(false);
                         }
@@ -182,6 +221,8 @@ public class Controller {
                     case "heartbeat" :
                         System.out.println("processing heartbeat from " + host);
                         processHeartbeat(host, in);
+                        System.out.println("chunk machines: " + chunkMachines.toString());
+                        System.out.println("chunks to machines: " + chunksToMachines.toString());
                         break;
                     default:
                         out.writeUTF("Invalid input");
@@ -189,6 +230,7 @@ public class Controller {
                 }
                 this.in.close();
                 this.out.close();
+                this.s.close();
             } catch (IOException e) {
                 e.printStackTrace();
             }
@@ -235,18 +277,23 @@ public class Controller {
             }
             // update chunk machine metadata (primarily for serving write requests)
             boolean found = false;
+            boolean needsSort = true;
             for (ChunkMachine cm : chunkMachines) {
                 if (cm.name.equals(host)) {
-                    chunkMachines.remove(cm);
                     cm.numChunks = numChunks;
+                    if (cm.freeSpace == freeSpace)
+                        needsSort = false;
                     cm.freeSpace = freeSpace;
-                    chunkMachines.add(cm);
                     found = true;
+                    break;
                 }
             }
             if (!found) {
+                System.out.println("Adding new chunk machine at " + host);
                 chunkMachines.add(new ChunkMachine(host, freeSpace, numChunks));
             }
+            if (!needsSort)
+                chunkMachines.sort(ChunkMachine::compareTo);
         }
     }
 }

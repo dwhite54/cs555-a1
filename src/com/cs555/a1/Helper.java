@@ -15,10 +15,11 @@ public class Helper {
     public static int space = 100;
     public static int readLimit = 1000;  // if each chunk is 64KB (64 * 2^10) then this is about 66mB
     public static int replicationFactor = 1;
-    public static int MajorHeartbeatSeconds = 30;
-    public static int MinorHeartbeatSeconds = 3;
+    public static int MajorHeartbeatSeconds = 60;//300;
+    public static int MinorHeartbeatSeconds = 6;//30;
 
-    public static boolean writeToChunkServerWithForward(byte[] chunk, String chunkFilename, ArrayList<String> chunkServers, int chunkPort) {
+    public static boolean writeToChunkServerWithForward(
+            byte[] chunk, String chunkFilename, ArrayList<String> chunkServers, int chunkPort) {
         String chunkServer = chunkServers.get(0);
         chunkServers.remove(0);
         try (
@@ -27,10 +28,11 @@ public class Helper {
                 DataOutputStream chunkOut = new DataOutputStream(chunkSocket.getOutputStream())
         ) {
             chunkOut.writeUTF("write");
+            System.out.println("writing " + chunkFilename + " to " + chunkServer + " with forward " + chunkServers.toString());
             chunkOut.writeUTF(chunkFilename);
             chunkOut.writeInt(chunk.length);
             chunkOut.write(chunk);
-            chunkOut.write(chunkServers.size());
+            chunkOut.writeInt(chunkServers.size());
             for (String server : chunkServers)
                 chunkOut.writeUTF(server);
             if (!chunkIn.readBoolean()) {
@@ -45,13 +47,17 @@ public class Helper {
         return true;
     }
 
-    public static byte[] readFromChunkServer(String chunkFilename, String chunkServer, int chunkPort) throws IOException {
+    public static byte[] readFromChunkServer(
+            String chunkFilename, String chunkServer, int chunkPort, int offset, int length) throws IOException {
         try (
                 Socket chunkSocket = new Socket(chunkServer, chunkPort);
                 DataInputStream chunkIn = new DataInputStream(chunkSocket.getInputStream());
                 DataOutputStream chunkOut = new DataOutputStream(chunkSocket.getOutputStream())
         ) {
+            chunkOut.writeUTF("read");
             chunkOut.writeUTF(chunkFilename);
+            chunkOut.writeInt(offset);
+            chunkOut.writeInt(length);
             int fileSize = chunkIn.readInt();
             if (fileSize == 0) {
                 throw new IOException("File read error");
@@ -62,7 +68,9 @@ public class Helper {
         }
     }
 
-    public static String readFromController(String controllerMachine, int controllerPort, String fileName) throws IOException {
+    public static String readFromController(
+            String controllerMachine, int controllerPort, String fileName, boolean isFailure, boolean isChunkServer
+    ) throws IOException {
         try (
                 Socket controllerSocket = new Socket(controllerMachine, controllerPort);
                 DataInputStream controllerIn = new DataInputStream(controllerSocket.getInputStream());
@@ -70,10 +78,13 @@ public class Helper {
         ) {
             controllerOut.writeUTF("read");
             controllerOut.writeUTF(fileName);
-            if (controllerIn.readBoolean())
+            controllerOut.writeBoolean(isFailure);
+            controllerOut.writeBoolean(isChunkServer);
+            if (controllerIn.readBoolean()) {
                 return controllerIn.readUTF();
-            else
-                throw new IOException("Controller: File not found.");
+            } else {
+                return null;
+            }
         }
     }
 }

@@ -22,9 +22,10 @@ public class Main {
         int chunkPort = 0;
         String controllerMachine = "";
         String[] chunkMachines = {};
-        boolean isClient = false;
+        boolean isClient = true;  //run as client by default, spawning processes
         boolean isController = false;
         boolean isChunkServer = false;
+        boolean needSpawnProcesses = true;
         for (int i = 0; i < args.length; i++) {
             try {
                 switch (args[i]) {
@@ -47,15 +48,17 @@ public class Main {
                             throw new IllegalArgumentException("Error parsing chunk machine list");
                         break;
                     case "--mode":
+                        needSpawnProcesses = false;
                         switch (args[i+1]) {
                             case "client":
-                                isClient = true;
                                 break;
                             case "controller":
                                 isController = true;
+                                isClient = false;
                                 break;
                             case "chunkserver":
                                 isChunkServer = true;
+                                isClient = false;
                                 break;
                             default:
                                 throw new IllegalArgumentException("Invalid mode");
@@ -65,6 +68,7 @@ public class Main {
             } catch (RangeException | IllegalArgumentException e) {  //catch range and parsing errors
                 System.out.println("Error parsing arguments");
                 printUsage();
+                e.printStackTrace();
             }
         }
 
@@ -72,11 +76,12 @@ public class Main {
                 (controllerMachine.equals("") || controllerPort == 0 || chunkMachines.length == 0 || chunkPort == 0)) {
             System.out.println("Incomplete arguments provided");
             printUsage();
+            return;
         } // ignore other cases, since those should be managed programmatically
 
         if (isClient) {
-            //TODO check if chunk servers/controller running before starting!! (allow multiple clients)
-            spawnProcesses(controllerPort, controllerMachine, chunkPort, chunkMachines);
+            if (needSpawnProcesses)
+                spawnProcesses(controllerPort, controllerMachine, chunkPort, chunkMachines);
             Client client = new Client(controllerPort, controllerMachine, chunkPort);
             client.run();
         }
@@ -136,7 +141,7 @@ public class Main {
         System.out.println("\t--controller-port: port the controller will communicate with");
         System.out.println("\t--controller-machine: machine the controller will run on");
         System.out.println("\t--chunk-port: port the chunk servers will communicate with");
-        System.out.println("\t--chunk-port: comma-delimited list of machines the chunk servers will run on");
+        System.out.println("\t--chunk-machines: comma-delimited list of machines the chunk servers will run on");
     }
 
     private static void StartProcess(String machine, String path, String args, int pIdx) {

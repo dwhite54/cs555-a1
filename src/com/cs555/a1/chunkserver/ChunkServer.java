@@ -6,6 +6,8 @@ import com.cs555.a1.Helper;
 import java.io.*;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -16,6 +18,29 @@ import java.util.Arrays;
 import java.util.HashMap;
 
 public class ChunkServer {
+    private static class FailureResult {
+        ArrayList<SliceFailureRange> sliceFailureRanges = new ArrayList<>();
+        byte[] contents;
+
+        FailureResult(byte[] contents) {
+            this.contents = contents;
+        }
+
+        void add(int offset, int length){
+            this.sliceFailureRanges.add(new SliceFailureRange(offset, length));
+        }
+
+        private static class SliceFailureRange {
+            int offset;
+            int length;
+
+            SliceFailureRange(int sliceStart, int sliceStop) {
+                this.offset = sliceStart;
+                this.length = sliceStop;
+            }
+        }
+    }
+
     private int controllerPort;
     private String controllerMachine;
     private int chunkPort;
@@ -99,6 +124,7 @@ public class ChunkServer {
             Instant start = Instant.now();
             int numMinor = 0;
             boolean isMajor = false;
+            boolean justBooted = true;
             while (true) {
                 try {
                     Thread.sleep(100);
@@ -106,10 +132,14 @@ public class ChunkServer {
                     System.out.println("Heartbeat thread interrupted, stopping");
                     return;
                 }
-                if (Duration.between(start, Instant.now()).toSeconds() > Helper.MinorHeartbeatSeconds) {
+                if (justBooted || Duration.between(start, Instant.now()).toSeconds() > Helper.MinorHeartbeatSeconds) {
+                    justBooted = false;
                     start = Instant.now();
-                    if (numMinor == Helper.MajorHeartbeatSeconds / Helper.MinorHeartbeatSeconds) isMajor = true;
-                    System.out.println("Sending heartbeat to controller, ismajor = " + Boolean.toString(isMajor));
+                    if (numMinor == Helper.MajorHeartbeatSeconds / Helper.MinorHeartbeatSeconds) {
+                        isMajor = true;
+                        numMinor = 0;
+                    }
+                    System.out.println("Sending heartbeat to controller, ismajor = " + isMajor);
                     try (
                             Socket s = new Socket(controllerMachine, controllerPort);
                             DataOutputStream out = new DataOutputStream(s.getOutputStream())
@@ -118,21 +148,23 @@ public class ChunkServer {
                         out.writeBoolean(isMajor);
                         out.writeInt(Helper.space);
                         out.writeInt(chunks.size());
-                        int numChunks = chunks.size();
-                        if (!isMajor) {  // find out how many we will write--this is ugly and could be improved! RACE CONDITION??
+                        int numChunks = 0;
+                        if (!isMajor) {
                             for (String key : chunks.keySet()) {
                                 if (chunks.get(key).isNew) {
                                     numChunks++;
                                 }
                             }
+                        } else {
+                            numChunks = chunks.size();
                         }
                         out.writeInt(numChunks);
                         for (String key : chunks.keySet()) {
                             Chunk chunk = chunks.get(key);
                             if (chunk.isNew || isMajor) {
                                 chunk.isNew = false;
-                                out.writeUTF(chunk.fileName);
                                 out.writeInt(chunk.version);
+                                out.writeUTF(chunk.fileName);
                             }
                         }
                     } catch (IOException e) {
@@ -166,8 +198,9 @@ public class ChunkServer {
             try {
                 String fileName;
                 int fileSize;
-                byte[] fileContents;
-                switch (in.readUTF()) {
+                byte[] fileContents = new byte[0];
+                String verb = in.readUTF();
+                switch (verb) {
                     case "write" :
                         fileName = in.readUTF();
                         fileSize = in.readInt();  // likely 64k, but check anyway (could be last chunk)
@@ -177,17 +210,23 @@ public class ChunkServer {
                         ArrayList<String> forwards = new ArrayList<>();
                         for (int i = 0; i < numForwards; i++)
                             forwards.add(in.readUTF());
-                        boolean isForwarded = Helper.writeToChunkServerWithForward(fileContents, fileName, forwards, chunkPort);
-                        boolean isWritten = writeChunk(fileName, fileContents);
+                        boolean isForwarded = true;
+                        if (!forwards.isEmpty())
+                             isForwarded = Helper.writeToChunkServerWithForward(
+                                    fileContents, fileName, forwards, chunkPort);
+                        boolean isWritten = writeChunk(fileName, fileContents, 0);
                         out.writeBoolean(isForwarded && isWritten);
                         break;
                     case "read" :
                         fileName = in.readUTF();
+                        int offset = in.readInt();
+                        int length = in.readInt();
                         if (chunks.containsKey(fileName)) {
-                            fileContents = readChunk(fileName);
-                            if (fileContents == null) {
-                                String readServer = Helper.readFromController(controllerMachine, controllerPort, fileName);
-                                fileContents = Helper.readFromChunkServer(fileName, readServer, chunkPort);
+                            FailureResult result = readChunk(fileName, offset, length);
+                            if (!result.sliceFailureRanges.isEmpty()) {  //failure detected
+                                fileContents = getRecoveredChunk(fileName, fileContents, result);
+                            } else {
+                                fileContents = result.contents;
                             }
                             out.writeInt(fileContents.length);
                             out.write(fileContents);
@@ -200,7 +239,7 @@ public class ChunkServer {
                         out.writeBoolean(true);
                         break;
                     default:
-                        out.writeUTF("Invalid input");
+                        System.out.println("Invalid command received: " + verb);
                         break;
                 }
                 this.in.close();
@@ -210,61 +249,96 @@ public class ChunkServer {
             }
         }
 
-        private byte[] readChunk(String fileName) {
+        private byte[] getRecoveredChunk(String fileName, byte[] fileContents, FailureResult result) {
+            try {
+                for (FailureResult.SliceFailureRange range : result.sliceFailureRanges) {
+                    String readServer = Helper.readFromController(
+                            controllerMachine, controllerPort, fileName, true, true);
+                    fileContents = Helper.readFromChunkServer(
+                            fileName, readServer, chunkPort, range.offset, range.length);
+                    writeChunk(fileName, fileContents, range.offset);
+                }
+            } catch (IOException e) {
+                System.out.println("Recovery failed");
+                e.printStackTrace();
+            }
+            return fileContents;
+        }
+
+        private FailureResult readChunk(String fileName, int offset, int length) {
             try {
                 String fullPath = Paths.get(Helper.chunkHome, fileName).toString();
                 FileInputStream fileInputStream = new FileInputStream(fullPath);
-                byte[] contents = fileInputStream.readAllBytes();
-
-                if (!validateChunk(fileName, contents)) return null;
-
-                return contents;
+                byte[] contents;
+                long skipped = fileInputStream.skip(offset);
+                if (skipped != offset)
+                    throw new IOException("Read failure");
+                if (length == -1) {
+                    contents = fileInputStream.readAllBytes();
+                } else
+                    contents = fileInputStream.readNBytes(length);
+                return validateChunk(fileName, contents, offset);
             } catch (IOException | NoSuchAlgorithmException e) {
                 e.printStackTrace();
-                return null;
+                FailureResult result = new FailureResult(null);
+                result.add(offset, length);
+                return result;
             }
         }
 
-        private boolean validateChunk(String fileName, byte[] contents) throws IOException, NoSuchAlgorithmException {
-            FileInputStream hashInputStream = new FileInputStream(fileName + ".sha1");
+        private FailureResult validateChunk(
+                String fileName, byte[] contents, int offset) throws IOException, NoSuchAlgorithmException {
+            FailureResult result = new FailureResult(contents);
+            File file = new File(Paths.get(Helper.chunkHome, fileName).toString());
+            FileInputStream hashInputStream = new FileInputStream(file.getPath() + ".sha1");
             byte[] hashes = hashInputStream.readAllBytes();
 
-            //check if the number of slices equals the number of hashes
             int numSlices = contents.length / Helper.BpSlice;
-            int sliceRemainder = contents.length % Helper.BpSlice;
-            if (sliceRemainder > 0) {  // if we have extra data beyond the last full 8KB slice, consider it a new slice
+            // if we have extra data beyond the last full 8KB slice, consider it a new slice
+            if (contents.length % Helper.BpSlice > 0) {
                 numSlices++;
             }
 
-            if (numSlices > Helper.slicesPerChunk) {
-                return false;
-            }
-
-            int numHashes = hashes.length / Helper.BpHash;
-            int hashRemainder = hashes.length % Helper.BpHash;
-            if (hashRemainder > 0) {
-                return false;
-            }
-
-            if (numHashes != numSlices) {
-                return false;
-            }
-
+            int hashOffset = (offset / Helper.BpSlice) * Helper.BpHash;
             for (int i = 0; i < numSlices; i++) {
-                byte[] oldHash = Arrays.copyOfRange(hashes, i*Helper.BpHash, (i*Helper.BpHash)+Helper.BpHash);
-                byte[] slice = Arrays.copyOfRange(contents, i*Helper.BpSlice, (i*Helper.BpSlice)+Helper.BpSlice);
+                int hashStart = hashOffset + (i*Helper.BpHash);
+                int hashEnd = hashStart+Helper.BpHash;
+                int sliceStart = i*Helper.BpSlice;
+                int sliceEnd = Integer.min(sliceStart+Helper.BpHash, contents.length);
+                if (hashEnd < hashes.length) { // no more hashes, but more slices 
+                    result.add(sliceStart, -1);
+                    break;
+                }
+
+                byte[] oldHash = Arrays.copyOfRange(hashes, hashStart, hashEnd);
+                byte[] slice = Arrays.copyOfRange(contents, sliceStart, sliceEnd);
                 byte[] newHash = getSHA1(slice);
                 if (!Arrays.equals(oldHash, newHash)) {
-                    return false;
+                    result.add(sliceStart, sliceEnd);
                 }
             }
-            return true;
+            return result;
         }
 
-        private boolean writeChunk(String fileName, byte[] contents) {
+        private boolean writeChunk(String fileName, byte[] contents, int slicesOffset) {
+            if (slicesOffset % Helper.BpSlice != 0)  //we don't write partial slices
+                return false;
+
+            int numSlicesOffset = slicesOffset / Helper.BpSlice;
+            int numSlices = contents.length / Helper.BpSlice;
+            //we write whole hashes even when chunks are smaller than 64KB, above integer divide would round down
+            if (contents.length % Helper.BpSlice != 0)
+                numSlices++;
+
+            int hashesOffset = numSlicesOffset * Helper.BpHash;
+
             try {
+                Path chunkHome = Paths.get(Helper.chunkHome);
+                if (Files.notExists(chunkHome))
+                    Files.createDirectories(chunkHome);
+
                 File file = new File(Paths.get(Helper.chunkHome, fileName).toString());
-                if (file.exists()) {
+                if (file.exists() && chunks.containsKey(fileName)) {
                     Chunk chunk = chunks.get(fileName);
                     chunk.version++;
                     chunk.isNew = true;
@@ -273,23 +347,25 @@ public class ChunkServer {
                     chunk.fileName = fileName;
                     chunk.version = 1;
                     String[] splits = fileName.split("_");
-                    chunk.sequence = Integer.parseInt(splits[splits.length - 1]);
+                    chunk.sequence = Integer.parseInt(splits[splits.length - 1].replace("chunk", ""));
                     chunks.put(fileName, chunk);
                 }
 
-                int numSlices = contents.length / Helper.BpSlice;
-                if (contents.length % Helper.BpSlice > 0) {
-                    numSlices++;
-                }
-
                 byte[] hashes = new byte[numSlices * Helper.BpHash];
-                for (int i = 0; i < numSlices; i++) {
-                    byte[] hash = getSHA1(Arrays.copyOfRange(contents, i * Helper.BpSlice, (i * Helper.BpSlice) + Helper.BpSlice));
-                    System.arraycopy(hash, 0, hashes, (i * Helper.BpHash), hash.length);
+                for (int i = numSlicesOffset; i < numSlicesOffset + numSlices; i++) {
+                    int sliceStart = i*Helper.BpSlice;
+                    int sliceEnd = Integer.min(sliceStart + Helper.BpSlice, contents.length);
+                    byte[] hash = getSHA1(Arrays.copyOfRange(contents, sliceStart, sliceEnd));
+                    int hashStart = i*Helper.BpHash;
+                    int hashEnd = hashStart + Helper.BpHash;
+                    System.arraycopy(hash, 0, hashes, hashStart, hashEnd);
                 }
 
                 FileOutputStream hashStream = new FileOutputStream(file.getPath() + ".sha1");
-                hashStream.write(hashes);
+                hashStream.write(hashes, hashesOffset, hashes.length);
+
+                FileOutputStream chunkStream = new FileOutputStream(file.getPath());
+                chunkStream.write(contents, slicesOffset, contents.length);
                 return true;
             } catch (NoSuchAlgorithmException | IOException e) {
                 e.printStackTrace();

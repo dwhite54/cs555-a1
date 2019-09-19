@@ -34,7 +34,9 @@ public class Client {
                     break;
                 case "read":
                     if (inputs.length == 2) {
-                        processRead(inputs[1]);
+                        if (!processRead(inputs[1])) {
+                            System.out.println("File not found.");
+                        }
                         break;
                     }
                 case "write":
@@ -66,6 +68,10 @@ public class Client {
             ) {
                 controllerOut.writeUTF("write");
                 controllerOut.writeUTF(chunkFilename);
+                if (!controllerIn.readBoolean()) {
+                    System.out.println("Controller not accepting writes.");
+                    return;
+                }
                 int numServers = controllerIn.readInt();
                 ArrayList<String> chunkServers = new ArrayList<>();
                 for (int j = 0; j < numServers; j++)
@@ -86,15 +92,19 @@ public class Client {
         }
     }
 
-    private void processRead(String fileName) {
+    private boolean processRead(String fileName) {
+        boolean isFailure = true;
         try {
             if (new File(fileName).exists()) {
                 ArrayList<byte[]> chunks = new ArrayList<>();
                 for (int i = 0; i < Helper.readLimit; i++) {
                     byte[] readChunk;
                     String chunkFilename = String.format("%s_chunk%s", fileName, Integer.toString(i + 1));
-                    String readServer = Helper.readFromController(controllerMachine, controllerPort, chunkFilename);
-                    readChunk = Helper.readFromChunkServer(fileName, readServer, chunkPort);
+                    String readServer = Helper.readFromController(
+                            controllerMachine, controllerPort, chunkFilename, false, false);
+                    if (readServer == null)
+                        break;
+                    readChunk = Helper.readFromChunkServer(chunkFilename, readServer, chunkPort, 0, -1);
                     chunks.add(readChunk);
                 }
                 if (chunks.size() == Helper.readLimit) {
@@ -102,6 +112,7 @@ public class Client {
                     return;
                 }
                 dechunkify(fileName, chunks); // writes file to disk
+                isFailure = false;
                 System.out.println("Success");
             } else {
                 System.out.println("Please specify a valid filename");
@@ -109,6 +120,7 @@ public class Client {
         } catch (IOException e) {
             e.printStackTrace();
         }
+        return isFailure
     }
 
     private ArrayList<byte[]> chunkify(String fileName) {
