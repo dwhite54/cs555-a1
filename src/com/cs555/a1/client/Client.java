@@ -81,7 +81,6 @@ public class Client {
                 controllerSocket.close();
                 //now proceed to write to chunk server (with forwarding info)
                 if (!Helper.writeToChunkServerWithForward(chunks.get(i), chunkFilename, chunkServers, chunkPort)) {
-                    System.out.println("Error writing to chunk server");
                     return;
                 }
                 System.out.println("Success");

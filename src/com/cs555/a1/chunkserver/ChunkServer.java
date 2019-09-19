@@ -202,19 +202,19 @@ public class ChunkServer {
                 String verb = in.readUTF();
                 switch (verb) {
                     case "write" :
+                        boolean isForwarded = true;
                         fileName = in.readUTF();
                         fileSize = in.readInt();  // likely 64k, but check anyway (could be last chunk)
-                        fileContents = new byte[fileSize];
-                        in.readFully(fileContents);
                         int numForwards = in.readInt();
                         ArrayList<String> forwards = new ArrayList<>();
                         for (int i = 0; i < numForwards; i++)
                             forwards.add(in.readUTF());
-                        boolean isForwarded = true;
-                        if (!forwards.isEmpty())
-                             isForwarded = Helper.writeToChunkServerWithForward(
-                                    fileContents, fileName, forwards, chunkPort);
+                        fileContents = new byte[fileSize];
+                        in.readFully(fileContents);
                         boolean isWritten = writeChunk(fileName, fileContents, 0);
+                        if (!forwards.isEmpty() && isWritten)
+                            isForwarded = Helper.writeToChunkServerWithForward(
+                                    fileContents, fileName, forwards, chunkPort);
                         out.writeBoolean(isForwarded && isWritten);
                         break;
                     case "read" :
@@ -356,9 +356,7 @@ public class ChunkServer {
                     int sliceStart = i*Helper.BpSlice;
                     int sliceEnd = Integer.min(sliceStart + Helper.BpSlice, contents.length);
                     byte[] hash = getSHA1(Arrays.copyOfRange(contents, sliceStart, sliceEnd));
-                    int hashStart = i*Helper.BpHash;
-                    int hashEnd = hashStart + Helper.BpHash;
-                    System.arraycopy(hash, 0, hashes, hashStart, hashEnd);
+                    System.arraycopy(hash, 0, hashes, i*Helper.BpHash, hash.length);
                 }
 
                 FileOutputStream hashStream = new FileOutputStream(file.getPath() + ".sha1");
@@ -367,7 +365,7 @@ public class ChunkServer {
                 FileOutputStream chunkStream = new FileOutputStream(file.getPath());
                 chunkStream.write(contents, slicesOffset, contents.length);
                 return true;
-            } catch (NoSuchAlgorithmException | IOException e) {
+            } catch (Exception e) {
                 e.printStackTrace();
                 return false;
             }

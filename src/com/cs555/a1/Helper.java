@@ -31,10 +31,10 @@ public class Helper {
             System.out.println("writing " + chunkFilename + " to " + chunkServer + " with forward " + chunkServers.toString());
             chunkOut.writeUTF(chunkFilename);
             chunkOut.writeInt(chunk.length);
-            chunkOut.write(chunk);
             chunkOut.writeInt(chunkServers.size());
             for (String server : chunkServers)
                 chunkOut.writeUTF(server);
+            chunkOut.write(chunk);
             if (!chunkIn.readBoolean()) {
                 System.out.println("Failed writing file to chunk server: " + chunkFilename);
                 return false;
