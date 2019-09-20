@@ -110,14 +110,6 @@ public class ChunkServer {
         }
     }
 
-    //from https://stackoverflow.com/questions/4895523/java-string-to-sha1
-    private byte[] getSHA1(byte[] chunk) throws NoSuchAlgorithmException {
-        MessageDigest crypt = MessageDigest.getInstance("SHA-1");
-        crypt.reset();
-        crypt.update(chunk);
-        return crypt.digest();
-    }
-
     private class ChunkControllerHandler extends Thread {
         @Override
         public void run() {
@@ -228,8 +220,12 @@ public class ChunkServer {
                             } else {
                                 fileContents = result.contents;
                             }
-                            out.writeInt(fileContents.length);
-                            out.write(fileContents);
+                            if (fileContents == null) // recovery failed
+                                out.writeInt(0);
+                            else {
+                                out.writeInt(fileContents.length);
+                                out.write(fileContents);
+                            }
                         } else {
                             out.writeInt(0);
                         }
@@ -254,6 +250,8 @@ public class ChunkServer {
                 for (FailureResult.SliceFailureRange range : result.sliceFailureRanges) {
                     String readServer = Helper.readFromController(
                             controllerMachine, controllerPort, fileName, true, true);
+                    if (readServer == null)
+                        throw new IOException(); // controller can't help us
                     fileContents = Helper.readFromChunkServer(
                             fileName, readServer, chunkPort, range.offset, range.length);
                     writeChunk(fileName, fileContents, range.offset);
@@ -304,15 +302,15 @@ public class ChunkServer {
                 int hashStart = hashOffset + (i*Helper.BpHash);
                 int hashEnd = hashStart+Helper.BpHash;
                 int sliceStart = i*Helper.BpSlice;
-                int sliceEnd = Integer.min(sliceStart+Helper.BpHash, contents.length);
-                if (hashEnd < hashes.length) { // no more hashes, but more slices 
+                int sliceEnd = Integer.min(sliceStart+Helper.BpSlice, contents.length);
+                if (hashEnd > hashes.length) { // no more hashes, but more slices
                     result.add(sliceStart, -1);
                     break;
                 }
 
                 byte[] oldHash = Arrays.copyOfRange(hashes, hashStart, hashEnd);
                 byte[] slice = Arrays.copyOfRange(contents, sliceStart, sliceEnd);
-                byte[] newHash = getSHA1(slice);
+                byte[] newHash = Helper.getSHA1(slice);
                 if (!Arrays.equals(oldHash, newHash)) {
                     result.add(sliceStart, sliceEnd);
                 }
@@ -355,7 +353,7 @@ public class ChunkServer {
                 for (int i = numSlicesOffset; i < numSlicesOffset + numSlices; i++) {
                     int sliceStart = i*Helper.BpSlice;
                     int sliceEnd = Integer.min(sliceStart + Helper.BpSlice, contents.length);
-                    byte[] hash = getSHA1(Arrays.copyOfRange(contents, sliceStart, sliceEnd));
+                    byte[] hash = Helper.getSHA1(Arrays.copyOfRange(contents, sliceStart, sliceEnd));
                     System.arraycopy(hash, 0, hashes, i*Helper.BpHash, hash.length);
                 }
 

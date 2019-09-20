@@ -92,7 +92,7 @@ public class Client {
     }
 
     private boolean processRead(String fileName) {
-        boolean isFailure = true;
+        boolean isSuccess = false;
         try {
             if (new File(fileName).exists()) {
                 ArrayList<byte[]> chunks = new ArrayList<>();
@@ -105,13 +105,14 @@ public class Client {
                         break;
                     readChunk = Helper.readFromChunkServer(chunkFilename, readServer, chunkPort, 0, -1);
                     chunks.add(readChunk);
+                    System.out.println("Successfully read " + chunkFilename);
                 }
                 if (chunks.size() == Helper.readLimit) {
                     System.out.println("File too large (maximum number of chunks exceeded)");
-                    return isFailure;
+                    return isSuccess;
                 }
                 dechunkify(fileName, chunks); // writes file to disk
-                isFailure = false;
+                isSuccess = true;
                 System.out.println("Success");
             } else {
                 System.out.println("Please specify a valid filename");
@@ -119,7 +120,7 @@ public class Client {
         } catch (IOException e) {
             e.printStackTrace();
         }
-        return isFailure;
+        return isSuccess;
     }
 
     private ArrayList<byte[]> chunkify(String fileName) {
@@ -131,7 +132,7 @@ public class Client {
             if (contents.length % Helper.BpChunk != 0) numChunks++;
             for (int i = 0; i < numChunks; i++) {
                 int startIdx = i*Helper.BpChunk;
-                int endIdx = Integer.min((i*Helper.BpChunk)+Helper.BpChunk, contents.length - 1);
+                int endIdx = Integer.min((i*Helper.BpChunk)+Helper.BpChunk, contents.length);
                 chunks.add(Arrays.copyOfRange(contents, startIdx, endIdx));
             }
         } catch (IOException e) {

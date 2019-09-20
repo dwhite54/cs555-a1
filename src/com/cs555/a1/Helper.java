@@ -4,6 +4,8 @@ import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.net.Socket;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 
 public class Helper {
@@ -17,6 +19,25 @@ public class Helper {
     public static int replicationFactor = 1;
     public static int MajorHeartbeatSeconds = 60;//300;
     public static int MinorHeartbeatSeconds = 6;//30;
+
+    public static byte[] getSHA1(byte[] chunk) throws NoSuchAlgorithmException {
+        MessageDigest crypt = MessageDigest.getInstance("SHA-1");
+        crypt.reset();
+        crypt.update(chunk);
+        return crypt.digest();
+    }
+
+    //https://stackoverflow.com/questions/9655181/how-to-convert-a-byte-array-to-a-hex-string-in-java
+    private static final char[] HEX_ARRAY = "0123456789ABCDEF".toCharArray();
+    public static String bytesToHex(byte[] bytes) {
+        char[] hexChars = new char[bytes.length * 2];
+        for (int j = 0; j < bytes.length; j++) {
+            int v = bytes[j] & 0xFF;
+            hexChars[j * 2] = HEX_ARRAY[v >>> 4];
+            hexChars[j * 2 + 1] = HEX_ARRAY[v & 0x0F];
+        }
+        return new String(hexChars);
+    }
 
     public static boolean writeToChunkServerWithForward(
             byte[] chunk, String chunkFilename, ArrayList<String> chunkServers, int chunkPort) {
