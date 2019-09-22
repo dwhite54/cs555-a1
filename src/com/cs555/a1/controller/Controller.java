@@ -136,16 +136,43 @@ public class Controller {
                                 } catch (IOException e) {
                                     System.out.println("Chunk server failure detected: " + chunkMachine.name);
                                     chunkMachineIterator.remove();
-                                    for (String chunk : chunksToMachines.keySet()) {
-                                        chunksToMachines.get(chunk).remove(chunkMachine.name);
-                                        if (chunksToMachines.get(chunk).isEmpty()) {
-                                            chunksToMachines.remove(chunk);
-                                        }
-                                    }
+                                    handleFailedServer(chunkMachine);
                                 }
                             }
                         }
 
+                    }
+                }
+            }
+        }
+
+        private void handleFailedServer(ChunkMachine chunkMachine) {
+            //look through all chunks we know about, remove this server from their set of servers
+            for (String chunk : chunksToMachines.keySet()) {
+                // usually this means do nothing, since not all servers maintain all chunks
+                boolean contained = chunksToMachines.get(chunk).remove(chunkMachine.name);
+                //if this means nobody has it, remove the chunk completely
+                if (chunksToMachines.get(chunk).isEmpty()) {
+                    chunksToMachines.remove(chunk);
+                } else if (contained) {
+                    // the chunk was at this server, now we need to forward it to other machines
+                    HashSet<String> servers = new HashSet<>(chunksToMachines.get(chunk));
+                    //store a server which has the chunk
+                    Iterator<String> serverIterator = servers.iterator();
+                    String first = serverIterator.next();
+                    ArrayList<String> serverList = new ArrayList<>();
+                    serverList.add(first);
+                    // add servers which don't contain the chunk (so not already in the set)
+                    for (int i = 0; serverList.size() + servers.size() - 1 < Helper.replicationFactor
+                            && i < chunkMachines.size(); i++) {
+                        String candidate = chunkMachines.get(chunkMachines.size() - 1).name;
+                        if (!servers.contains(candidate))
+                            serverList.add(candidate);
+                    }
+                    if (serverList.size() > 1) {
+                        // send this on to the chunk server(s)--they will forward the file if they have it
+                        System.out.println("Reinforcing replication on " + chunk + " via " + serverList);
+                        Helper.writeToChunkServerWithForward(new byte[0], chunk, serverList, chunkPort);
                     }
                 }
             }

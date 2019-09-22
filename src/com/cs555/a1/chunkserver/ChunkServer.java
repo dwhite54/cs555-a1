@@ -226,17 +226,26 @@ public class ChunkServer {
         private void handleWrite() throws IOException {
             String fileName;
             int fileSize;
-            byte[] fileContents;
+            byte[] fileContents = new byte[0];
             boolean isForwarded = true;
+            boolean isWritten = true;
             fileName = in.readUTF();
             fileSize = in.readInt();  // likely 64k, but check anyway (could be last chunk)
             int numForwards = in.readInt();
             ArrayList<String> forwards = new ArrayList<>();
             for (int i = 0; i < numForwards; i++)
                 forwards.add(in.readUTF());
-            fileContents = new byte[fileSize];
-            in.readFully(fileContents);
-            boolean isWritten = writeChunk(fileName, fileContents, 0);
+            if (fileSize == 0) { // this signals we should have the file
+                FailureResult result = readChunk(fileName, 0, -1);
+                if (result.sliceFailureRanges.isEmpty())
+                    fileContents = result.contents;
+                else
+                    isWritten = false;
+            } else {
+                fileContents = new byte[fileSize];
+                in.readFully(fileContents);
+                isWritten = writeChunk(fileName, fileContents, 0);
+            }
             if (!forwards.isEmpty() && isWritten)
                 isForwarded = Helper.writeToChunkServerWithForward(
                         fileContents, fileName, forwards, chunkPort);

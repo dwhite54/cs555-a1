@@ -56,7 +56,8 @@ public class Helper {
             chunkOut.writeInt(chunkServers.size());
             for (String server : chunkServers)
                 chunkOut.writeUTF(server);
-            chunkOut.write(chunk);
+            if (chunk.length > 0)
+                chunkOut.write(chunk);
             if (!chunkIn.readBoolean()) {
                 if (Helper.debug) System.out.println("Failed writing file to chunk server: " + chunkFilename);
                 return false;
