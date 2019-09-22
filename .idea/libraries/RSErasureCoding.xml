@@ -1,0 +1,9 @@
+<component name="libraryTable">
+  <library name="RSErasureCoding">
+    <CLASSES>
+      <root url="jar://$PROJECT_DIR$/reed-solomon-erasure-coding.jar!/" />
+    </CLASSES>
+    <JAVADOC />
+    <SOURCES />
+  </library>
+</component>

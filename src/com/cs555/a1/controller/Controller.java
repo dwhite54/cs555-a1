@@ -251,14 +251,16 @@ public class Controller {
         private void handleWrite() throws IOException {
             String fileName;
             fileName = in.readUTF();
-            if (chunkMachines.isEmpty()) {
+            // we need up-to-date sorting (from heartbeats)
+            List<ChunkMachine> synchronizedList = Collections.synchronizedList(chunkMachines);
+            if (synchronizedList.isEmpty()) {
                 out.writeBoolean(false);
-            } else if (chunkMachines.get(chunkMachines.size() - 1).freeSpace <= 0) {
+            } else if (synchronizedList.get(synchronizedList.size() - 1).freeSpace <= 0) {
                 out.writeBoolean(false);
             } else {
                 out.writeBoolean(true);
                 HashSet<String> writeMachines = chunksToMachines.getOrDefault(fileName, new HashSet<>());
-                int replicationFactor = Integer.min(Helper.replicationFactor, chunkMachines.size());
+                int replicationFactor = Integer.min(Helper.replicationFactor, synchronizedList.size());
                 // send to servers which have it first
                 // then to servers which have the most room (up to replication factor)
                 out.writeInt(replicationFactor);
@@ -267,7 +269,7 @@ public class Controller {
                 }
                 int numSent = writeMachines.size();
                 for (int i = 0; numSent < replicationFactor; i++) {
-                    String bestServer = chunkMachines.get(chunkMachines.size() - 1 - i).name;
+                    String bestServer = synchronizedList.get(synchronizedList.size() - 1 - i).name;
                     if (!writeMachines.contains(bestServer)) {
                         out.writeUTF(bestServer);
                         numSent++;

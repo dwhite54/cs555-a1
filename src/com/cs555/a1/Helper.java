@@ -1,5 +1,7 @@
 package com.cs555.a1;
 
+import erasure.ReedSolomon;
+
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
@@ -16,10 +18,52 @@ public class Helper {
     public static String chunkHome = "/tmp/dwhite54/chunks";
     public static int space = 10000;
     public static int readLimit = 1000;  // if each chunk is 64KB (64 * 2^10) then this is about 66mB
-    public static int replicationFactor = 3;
     public static int MajorHeartbeatSeconds = 60;//300;
     public static int MinorHeartbeatSeconds = 1;//30;
     public static boolean debug = true;
+    public static boolean useReplication = false;
+
+    public static final int DATA_SHARDS = 6;
+    public static final int PARITY_SHARDS = 3;
+    public static final int TOTAL_SHARDS = 9;
+
+    private static int _replicationFactor = 3;
+    public static int replicationFactor = useReplication ? _replicationFactor : 1;
+
+    public static byte[][] erasureEncode(byte[] input) {
+        int shardSize = (input.length + DATA_SHARDS - 1) / DATA_SHARDS;
+        int bufferSize = shardSize * DATA_SHARDS;
+        byte[] allBytes = new byte[bufferSize];
+        System.arraycopy(input, 0, allBytes, 0, input.length);
+        byte[][] shards = new byte[TOTAL_SHARDS][shardSize];
+        for (int i = 0; i < DATA_SHARDS; i++) {
+            System.arraycopy(allBytes, i * shardSize, shards[i], 0, shardSize);
+        }
+        ReedSolomon reedSolomon = new ReedSolomon(DATA_SHARDS, PARITY_SHARDS);
+        reedSolomon.encodeParity(shards, 0, shardSize);
+        return shards;
+    }
+
+    public static boolean erasureDecode(byte[][] shards, boolean[] shardPresent) {
+        int shardCount = 0;
+
+        for (boolean b : shardPresent) {
+            if (b) {
+                shardCount++;
+            }
+        }
+
+        // We need at least DATA_SHARDS to be able to reconstruct the file.
+        if (shardCount < DATA_SHARDS) {
+            System.out.println("Not enough shards present");
+            return false;
+        }
+
+        ReedSolomon reedSolomon = new ReedSolomon(DATA_SHARDS, PARITY_SHARDS);
+        reedSolomon.decodeMissing(shards, shardPresent, 0, shards[0].length);
+
+        return true;
+    }
 
     public static byte[] getSHA1(byte[] chunk) throws NoSuchAlgorithmException {
         MessageDigest crypt = MessageDigest.getInstance("SHA-1");

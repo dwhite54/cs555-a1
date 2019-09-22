@@ -60,12 +60,12 @@ public class Client {
 
     private boolean processWrite(String fileName) {
         boolean result = true;
-        ArrayList<byte[]> chunks = chunkify(fileName);
+        byte[][] chunks = encode(fileName);
         if (chunks == null) {
             System.out.println("Error reading file from disk");
             result = false;
         } else {
-            for (int i = 0; i < chunks.size(); i++) {
+            for (int i = 0; i < chunks.length; i++) {
                 String chunkFilename = String.format("%s_chunk%s", fileName, Integer.toString(i + 1));
                 try (
                         Socket controllerSocket = new Socket(controllerMachine, controllerPort);
@@ -87,7 +87,7 @@ public class Client {
                     controllerOut.close();
                     controllerSocket.close();
                     //now proceed to write to chunk server (with forwarding info)
-                    if (!Helper.writeToChunkServerWithForward(chunks.get(i), chunkFilename, chunkServers, chunkPort)) {
+                    if (!Helper.writeToChunkServerWithForward(chunks[i], chunkFilename, chunkServers, chunkPort)) {
                         result = false;
                         break;
                     }
@@ -99,6 +99,20 @@ public class Client {
             }
         }
         return result;
+    }
+
+    private byte[][] encode(String fileName) {
+        byte[] contents;
+        try (FileInputStream fileInputStream = new FileInputStream(fileName)) {
+            contents = fileInputStream.readAllBytes();
+        } catch (IOException e) {
+            return null;
+        }
+
+        if (Helper.useReplication)
+            return chunkify(contents);
+        else
+            return Helper.erasureEncode(contents);
     }
 
     private boolean processRead(String fileName) {
@@ -122,7 +136,7 @@ public class Client {
             } else if (chunks.size() == 0) {
                 System.out.println("File not found");
             } else {
-                dechunkify(fileName, chunks); // writes file to disk
+                decode(fileName, chunks); // writes file to disk
                 isSuccess = true;
             }
         } catch (IOException e) {
@@ -131,32 +145,56 @@ public class Client {
         return isSuccess;
     }
 
-    private ArrayList<byte[]> chunkify(String fileName) {
-        ArrayList<byte[]> chunks = new ArrayList<>();
-        try {
-            FileInputStream fileInputStream = new FileInputStream(fileName);
-            byte[] contents = fileInputStream.readAllBytes();
-            int numChunks = contents.length / Helper.BpChunk;
-            if (contents.length % Helper.BpChunk != 0) numChunks++;
-            for (int i = 0; i < numChunks; i++) {
-                int startIdx = i*Helper.BpChunk;
-                int endIdx = Integer.min((i*Helper.BpChunk)+Helper.BpChunk, contents.length);
-                chunks.add(Arrays.copyOfRange(contents, startIdx, endIdx));
+    private void decode(String fileName, ArrayList<byte[]> chunks) throws IOException {
+        if (!Helper.useReplication) {
+            int shardSize = 0;
+
+            boolean[] shardsPresent = new boolean[Helper.TOTAL_SHARDS];
+
+            for (int i = 0; i < chunks.size(); i++) {
+                if (chunks.get(i) != null) {
+                    shardSize = chunks.get(i).length;
+                    shardsPresent[i] = true;
+                }
             }
-        } catch (IOException e) {
-            e.printStackTrace();
-            return null;
+            byte[][] shards = new byte[chunks.size()][shardSize];
+            if (Helper.erasureDecode(shards, shardsPresent))
+                dechunkifyArray(fileName, shards);
+        } else {
+            dechunkifyList(fileName, chunks);
+        }
+    }
+
+    private byte[][] chunkify(byte[] contents) {
+        int numChunks = contents.length / Helper.BpChunk;
+        if (contents.length % Helper.BpChunk != 0) numChunks++;
+        byte[][] chunks = new byte[numChunks][Helper.BpChunk];
+        for (int i = 0; i < numChunks; i++) {
+            int startIdx = i*Helper.BpChunk;
+            int endIdx = Integer.min((i*Helper.BpChunk)+Helper.BpChunk, contents.length);
+            chunks[i] = Arrays.copyOfRange(contents, startIdx, endIdx);
         }
         return chunks;
     }
 
-    private void dechunkify(String fileName, ArrayList<byte[]> chunks) {
-        try ( FileOutputStream fileOutputStream = new FileOutputStream(fileName)) {
-            for (byte[] chunk : chunks)
-                fileOutputStream.write(chunk);
-        } catch (IOException e) {
-            if (Helper.debug) System.out.println("Client: Error writing file.");
-            e.printStackTrace();
+    private void dechunkifyArray(String fileName, byte[][] chunks) throws IOException {
+        FileOutputStream fileOutputStream = new FileOutputStream(fileName);
+        for (int i = 0; i < chunks.length - 1; i++) {
+            fileOutputStream.write(chunks[i]);
+        }
+
+        //last one may have zero-padding
+        byte[] last = chunks[chunks.length - 1];
+        int end = last.length - 1;
+        while(end >= 0 && last[end] == 0)
+            end--;
+        fileOutputStream.write(last, 0, end+1);
+    }
+
+    private void dechunkifyList(String fileName, ArrayList<byte[]> chunks) throws IOException {
+        FileOutputStream fileOutputStream = new FileOutputStream(fileName);
+        for (int i = 0; i < chunks.size(); i++) {
+            fileOutputStream.write(chunks.get(i));
         }
     }
 

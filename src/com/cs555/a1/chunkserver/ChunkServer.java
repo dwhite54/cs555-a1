@@ -207,10 +207,16 @@ public class ChunkServer {
                 FailureResult result = readChunk(fileName, offset, length);
                 if (!result.sliceFailureRanges.isEmpty()) {  //failure detected
                     if (Helper.debug) System.out.println("failure detected for " + fileName);
-                    fileContents = getRecoveredChunk(fileName, result);
+                    FailureResult recoverResult = getRecoveredChunk(fileName, result, offset, length);
+                    if (recoverResult != null && recoverResult.sliceFailureRanges.isEmpty())
+                        fileContents = recoverResult.contents;
+                    else {
+                        fileContents = null;
+                    }
                 } else {
                     fileContents = result.contents;
                 }
+                //now respond to requester
                 if (fileContents == null) // recovery failed
                     out.writeInt(0);
                 else {
@@ -252,8 +258,7 @@ public class ChunkServer {
             out.writeBoolean(isForwarded && isWritten);
         }
 
-        private byte[] getRecoveredChunk(String fileName, FailureResult result) {
-            byte[] fileContents = new byte[0];
+        private FailureResult getRecoveredChunk(String fileName, FailureResult result, int originalOffset, int originalLength) {
             try {
                 for (FailureResult.SliceFailureRange range : result.sliceFailureRanges) {
                     String readServer = Helper.readFromController(
@@ -263,16 +268,16 @@ public class ChunkServer {
                     if (Helper.debug)
                         System.out.printf("Requesting slice/chunk from %s offset %d length %d%n",
                                 readServer, range.offset, range.length);
-                    fileContents = Helper.readFromChunkServer(
+                    byte[] recovered = Helper.readFromChunkServer(
                             fileName, readServer, chunkPort, range.offset, range.length);
-                    if (Helper.debug) System.out.println("writing file to disk");
-                    writeChunk(fileName, fileContents, range.offset);
+                    writeChunk(fileName, recovered, range.offset);
                 }
+                return readChunk(fileName, originalOffset, originalLength);
             } catch (IOException e) {
                 if (Helper.debug) System.out.println("Recovery failed");
                 e.printStackTrace();
+                return null;
             }
-            return fileContents;
         }
 
         private FailureResult readChunk(String fileName, int offset, int length) {
@@ -288,7 +293,10 @@ public class ChunkServer {
                     contents = fileInputStream.readAllBytes();
                 } else
                     contents = fileInputStream.readNBytes(length);
-                return validateChunk(fileName, contents, offset);
+                if (Helper.useReplication)
+                    return validateChunk(fileName, contents, offset);
+                else
+                    return new FailureResult(contents);  //no chunk server validation for erasure coding
             } catch (IOException | NoSuchAlgorithmException e) {
                 e.printStackTrace();
                 FailureResult result = new FailureResult(null);
@@ -335,17 +343,6 @@ public class ChunkServer {
         }
 
         private boolean writeChunk(String fileName, byte[] contents, int slicesOffset) {
-            if (slicesOffset % Helper.BpSlice != 0)  //we don't write partial slices
-                return false;
-
-            int numSlicesOffset = slicesOffset / Helper.BpSlice;
-            int numSlices = contents.length / Helper.BpSlice;
-            //we write whole hashes even when chunks are smaller than 64KB, above integer divide would round down
-            if (contents.length % Helper.BpSlice != 0)
-                numSlices++;
-
-            int hashesOffset = numSlicesOffset * Helper.BpHash;
-
             try {
                 Path chunkHome = Paths.get(Helper.chunkHome);
                 if (Files.notExists(chunkHome))
@@ -368,18 +365,30 @@ public class ChunkServer {
                     }
                 }
 
-                byte[] hashes = new byte[numSlices * Helper.BpHash];
-                for (int i = 0; i < numSlices; i++) {
-                    int sliceStart = i*Helper.BpSlice;
-                    int sliceEnd = Integer.min(sliceStart + Helper.BpSlice, contents.length);
-                    byte[] hash = Helper.getSHA1(Arrays.copyOfRange(contents, sliceStart, sliceEnd));
-                    System.arraycopy(hash, 0, hashes, i*Helper.BpHash, hash.length);
+                if (Helper.useReplication) {
+                    if (slicesOffset % Helper.BpSlice != 0)  //we don't write partial slices
+                        return false;
+
+                    int numSlicesOffset = slicesOffset / Helper.BpSlice;
+                    int numSlices = contents.length / Helper.BpSlice;
+                    //we write whole hashes even when chunks are smaller than 64KB, above integer divide would round down
+                    if (contents.length % Helper.BpSlice != 0)
+                        numSlices++;
+
+                    int hashesOffset = numSlicesOffset * Helper.BpHash;
+
+                    byte[] hashes = new byte[numSlices * Helper.BpHash];
+                    for (int i = 0; i < numSlices; i++) {
+                        int sliceStart = i * Helper.BpSlice;
+                        int sliceEnd = Integer.min(sliceStart + Helper.BpSlice, contents.length);
+                        byte[] hash = Helper.getSHA1(Arrays.copyOfRange(contents, sliceStart, sliceEnd));
+                        System.arraycopy(hash, 0, hashes, i * Helper.BpHash, hash.length);
+                    }
+
+                    RandomAccessFile hashStream = new RandomAccessFile(file.getPath() + ".sha1", "rw");
+                    hashStream.seek(hashesOffset);
+                    hashStream.write(hashes);
                 }
-
-                RandomAccessFile hashStream = new RandomAccessFile(file.getPath() + ".sha1", "rw");
-                hashStream.seek(hashesOffset);
-                hashStream.write(hashes);
-
                 RandomAccessFile chunkStream = new RandomAccessFile(file.getPath(), "rw");
                 chunkStream.seek(slicesOffset);
                 chunkStream.write(contents);
