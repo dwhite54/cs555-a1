@@ -7,6 +7,7 @@ import java.net.*;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class Controller {
 
@@ -31,11 +32,7 @@ public class Controller {
             }
 
             final ChunkMachine other = (ChunkMachine) obj;
-            if ((this.name == null) ? (other.name != null) : !this.name.equals(other.name)) {
-                return false;
-            }
-
-            return true;
+            return Objects.equals(this.name, other.name);
         }
 
         @Override
@@ -56,12 +53,12 @@ public class Controller {
 
     private ServerSocket ss;
     private boolean shutdown = false;
-    private HashMap<String, HashSet<String>> chunksToMachines;  //chunks to machines which contain them
-    private ArrayList<ChunkMachine> chunkMachines; //machines to metrics (free space and total number)
+    private final ConcurrentHashMap<String, HashSet<String>> chunksToMachines;  //chunks to machines which contain them
+    private final ArrayList<ChunkMachine> chunkMachines; //machines to metrics (free space and total number)
     private int chunkPort;
-    
+
     public Controller(int controllerPort, int chunkPort) throws IOException {
-        this.chunksToMachines = new HashMap<>();
+        this.chunksToMachines = new ConcurrentHashMap<>();
         this.chunkMachines = new ArrayList<>();
         this.chunkPort = chunkPort;
         ss = new ServerSocket(controllerPort);
@@ -84,31 +81,18 @@ public class Controller {
     public void run() throws IOException {
         // running infinite loop for getting
         // client request
-        Thread mT = new ControllerChunkHandler();
+        Thread mT = new ControllerChunkWatcher();
         mT.start();
         while (!shutdown)
         {
             Socket s = null;
             try
             {
-
-                // socket object to receive incoming client requests
                 s = ss.accept();
-
-                System.out.println("A new client is connected : " + s);
-
-                // obtaining input and out streams
                 DataInputStream in = new DataInputStream(s.getInputStream());
                 DataOutputStream out = new DataOutputStream(s.getOutputStream());
-
-                System.out.println("Assigning new thread for this client");
-
-                // create a new thread object
-                Thread t = new ControllerClientHandler(s, in, out);
-
-                // Invoking the start() method
+                Thread t = new ControllerRequestHandler(s, in, out);
                 t.start();
-
             }
             catch (Exception e){
                 if (s != null){
@@ -119,35 +103,49 @@ public class Controller {
         }
     }
 
-    private class ControllerChunkHandler extends Thread {
+    private class ControllerChunkWatcher extends Thread {
 
         @Override
         public void run() {
             Instant start = Instant.now();
             while (true) {
                 try {
-                    Thread.sleep(100);
+                    Thread.sleep(1000);
                 } catch (InterruptedException e) {
-                    System.out.println("Heartbeat thread interrupted, stopping");
+                    if (Helper.debug) System.out.println("Heartbeat thread interrupted, stopping");
                     return;
                 }
                 if (Duration.between(start, Instant.now()).toSeconds() > Helper.MinorHeartbeatSeconds) {
                     start = Instant.now();
-                    for (ChunkMachine chunkMachine : chunkMachines) {
-                        try (
-                                Socket s = new Socket(chunkMachine.name, chunkPort);
-                                DataOutputStream out = new DataOutputStream(s.getOutputStream());
-                                DataInputStream in = new DataInputStream(s.getInputStream())
-                        ) {
-                            out.writeUTF("heartbeat");
-                            System.out.println("Sending heartbeat to chunk server " + chunkMachine.name);
-                            if (!in.readBoolean()) {
-                                throw new IOException();
+                    synchronized (chunkMachines) {
+                        synchronized (chunksToMachines) {
+                            Iterator<ChunkMachine> chunkMachineIterator = chunkMachines.iterator();
+                            while (chunkMachineIterator.hasNext()) {
+                                ChunkMachine chunkMachine = chunkMachineIterator.next();
+                                try (
+                                        Socket s = new Socket(chunkMachine.name, chunkPort);
+                                        DataOutputStream out = new DataOutputStream(s.getOutputStream());
+                                        DataInputStream in = new DataInputStream(s.getInputStream())
+                                ) {
+                                    out.writeUTF("heartbeat");
+                                    if (Helper.debug)
+                                        System.out.println("Sending heartbeat to chunk server " + chunkMachine.name);
+                                    if (!in.readBoolean()) {
+                                        throw new IOException();
+                                    }
+                                } catch (IOException e) {
+                                    System.out.println("Chunk server failure detected: " + chunkMachine.name);
+                                    chunkMachineIterator.remove();
+                                    for (String chunk : chunksToMachines.keySet()) {
+                                        chunksToMachines.get(chunk).remove(chunkMachine.name);
+                                        if (chunksToMachines.get(chunk).isEmpty()) {
+                                            chunksToMachines.remove(chunk);
+                                        }
+                                    }
+                                }
                             }
-                        } catch (IOException e) {
-                            System.out.println("Chunk server failure detected: " + chunkMachine);
-                            chunkMachines.remove(chunkMachine);
                         }
+
                     }
                 }
             }
@@ -155,7 +153,7 @@ public class Controller {
     }
 
     // ClientHandler class
-    class ControllerClientHandler extends Thread
+    class ControllerRequestHandler extends Thread
     {
         final DataInputStream in;
         final DataOutputStream out;
@@ -163,7 +161,7 @@ public class Controller {
         private Random rng = new Random();
 
         // Constructor
-        ControllerClientHandler(Socket s, DataInputStream in, DataOutputStream out)
+        ControllerRequestHandler(Socket s, DataInputStream in, DataOutputStream out)
         {
             this.s = s;
             this.in = in;
@@ -174,55 +172,18 @@ public class Controller {
         public void run()
         {
             try {
-                String fileName;
                 String host = s.getInetAddress().getHostName();
                 switch (in.readUTF()) {
-                    case "write" :
-                        fileName = in.readUTF();
-                        if (chunkMachines.isEmpty()) {
-                            out.writeBoolean(false);
-                            break;
-                        }
-                        out.writeBoolean(true);
-                        HashSet<String> writeMachines = chunksToMachines.get(fileName);
-                        if (writeMachines == null || writeMachines.isEmpty()) {
-                            int numServers = Integer.min(Helper.replicationFactor, chunkMachines.size());
-                            out.writeInt(numServers);
-                            for (int i = 0; i < numServers; i++) {
-                                out.writeUTF(chunkMachines.get(chunkMachines.size() - 1 - i).name);
-                            }
-                        } else {
-                            out.writeInt(writeMachines.size());
-                            assert writeMachines.size() >= Helper.replicationFactor;  // else replication has failed
-                            for (String machine : writeMachines) {
-                                out.writeUTF(machine);
-                            }
-                        }
+                    case "write":
+                        handleWrite();
                         break;
-                    case "read" :
-                        fileName = in.readUTF();
-                        if (in.readBoolean()) { //isFailure
-                             // unused (chunk server self-recovers)
-                        }
-                        if (chunksToMachines.containsKey(fileName)) {
-                            HashSet<String> readMatches = new HashSet<>(chunksToMachines.get(fileName));
-                            if (in.readBoolean()) //is chunk server?
-                                readMatches.remove(host);
-                            if (readMatches.isEmpty()) {
-                                out.writeBoolean(false);
-                            } else {
-                                out.writeBoolean(true);
-                                out.writeUTF(getRandomElement(readMatches, rng));
-                            }
-                        } else {
-                            out.writeBoolean(false);
-                        }
+                    case "read":
+                        handleRead(host);
                         break;
-                    case "heartbeat" :
-                        System.out.println("processing heartbeat from " + host);
+                    case "heartbeat":
+                        //if (Helper.debug) System.out.println("processing heartbeat from " + host);
                         processHeartbeat(host, in);
-                        System.out.println("chunk machines: " + chunkMachines.toString());
-                        System.out.println("chunks to machines: " + chunksToMachines.toString());
+                        //if (Helper.debug) System.out.println("chunk machines: " + chunkMachines.toString());
                         break;
                     default:
                         out.writeUTF("Invalid input");
@@ -233,6 +194,58 @@ public class Controller {
                 this.s.close();
             } catch (IOException e) {
                 e.printStackTrace();
+            }
+        }
+
+        private void handleRead(String host) throws IOException {
+            String fileName;
+            fileName = in.readUTF();
+            boolean isFailure = in.readBoolean();
+            if (chunksToMachines.containsKey(fileName)) {
+                HashSet<String> machines = chunksToMachines.get(fileName);
+                if (isFailure) { //isFailure
+                    machines.remove(host);
+                }
+                HashSet<String> readMatches = new HashSet<>(machines);
+                if (in.readBoolean() && !isFailure) //is chunk server?
+                    readMatches.remove(host);
+                if (readMatches.isEmpty()) {
+                    out.writeBoolean(false);
+                } else {
+                    out.writeBoolean(true);
+                    String randServer = getRandomElement(readMatches, rng);
+                    out.writeUTF(randServer);
+                }
+            } else {
+                out.writeBoolean(false);
+            }
+        }
+
+        private void handleWrite() throws IOException {
+            String fileName;
+            fileName = in.readUTF();
+            if (chunkMachines.isEmpty()) {
+                out.writeBoolean(false);
+            } else if (chunkMachines.get(chunkMachines.size() - 1).freeSpace <= 0) {
+                out.writeBoolean(false);
+            } else {
+                out.writeBoolean(true);
+                HashSet<String> writeMachines = chunksToMachines.getOrDefault(fileName, new HashSet<>());
+                int replicationFactor = Integer.min(Helper.replicationFactor, chunkMachines.size());
+                // send to servers which have it first
+                // then to servers which have the most room (up to replication factor)
+                out.writeInt(replicationFactor);
+                for (String machine : writeMachines) {
+                    out.writeUTF(machine);
+                }
+                int numSent = writeMachines.size();
+                for (int i = 0; numSent < replicationFactor; i++) {
+                    String bestServer = chunkMachines.get(chunkMachines.size() - 1 - i).name;
+                    if (!writeMachines.contains(bestServer)) {
+                        out.writeUTF(bestServer);
+                        numSent++;
+                    }
+                }
             }
         }
 
@@ -248,52 +261,56 @@ public class Controller {
         }
 
         private void processHeartbeat(String host, DataInputStream in) throws IOException {
-            boolean isMajor = in.readBoolean();
-            int freeSpace = in.readInt();
-            int numChunks = in.readInt();
-            int numMsgChunks = in.readInt();
-            HashSet<String> affirms = new HashSet<>();
-            for (int i = 0; i < numMsgChunks; i++) {
-                int chunkVersion = in.readInt(); //currently unused
-                String chunkName = in.readUTF();
-                if (chunksToMachines.containsKey(chunkName)) {
-                    chunksToMachines.get(chunkName).add(host);
-                } else {
-                    HashSet<String> machineSet = new HashSet<>();
-                    machineSet.add(host);
-                    chunksToMachines.put(chunkName, machineSet);
-                }
-                if (isMajor) {
-                    affirms.add(chunkName);
-                }
-            }
-            if (isMajor) {  // process deletions
-                for (String chunkName : chunksToMachines.keySet()) {
-                    // if global data says this host has it, but its latest major HB says it doesn't, delete
-                    if (chunksToMachines.get(chunkName).contains(host) && !affirms.contains(chunkName)) {
-                        chunksToMachines.get(chunkName).remove(host);
+            synchronized (chunkMachines) {
+                synchronized (chunksToMachines) {
+                    boolean isMajor = in.readBoolean();
+                    int numChunks = in.readInt();
+                    int numMsgChunks = in.readInt();
+                    int freeSpace = Helper.space - numChunks;
+                    HashSet<String> affirms = new HashSet<>();
+                    for (int i = 0; i < numMsgChunks; i++) {
+                        int chunkVersion = in.readInt(); //currently unused
+                        String chunkName = in.readUTF();
+                        if (chunksToMachines.containsKey(chunkName)) {
+                            chunksToMachines.get(chunkName).add(host);
+                        } else {
+                            HashSet<String> machineSet = new HashSet<>();
+                            machineSet.add(host);
+                            chunksToMachines.put(chunkName, machineSet);
+                        }
+                        if (isMajor) {
+                            affirms.add(chunkName);
+                        }
                     }
+                    if (isMajor) {  // process deletions
+                        for (String chunkName : chunksToMachines.keySet()) {
+                            // if global data says this host has it, but its latest major HB says it doesn't, delete
+                            if (chunksToMachines.get(chunkName).contains(host) && !affirms.contains(chunkName)) {
+                                chunksToMachines.get(chunkName).remove(host);
+                            }
+                        }
+                    }
+                    // update chunk machine metadata (primarily for serving write requests)
+                    boolean found = false;
+                    boolean needsSort = true;
+                    for (ChunkMachine cm : chunkMachines) {
+                        if (cm.name.equals(host)) {
+                            cm.numChunks = numChunks;
+                            if (cm.freeSpace == freeSpace)
+                                needsSort = false;
+                            cm.freeSpace = freeSpace;
+                            found = true;
+                            break;
+                        }
+                    }
+                    if (!found) {
+                        //if (Helper.debug) System.out.println("Adding new chunk machine at " + host);
+                        chunkMachines.add(new ChunkMachine(host, freeSpace, numChunks));
+                    }
+                    if (!needsSort)
+                        chunkMachines.sort(ChunkMachine::compareTo);
                 }
             }
-            // update chunk machine metadata (primarily for serving write requests)
-            boolean found = false;
-            boolean needsSort = true;
-            for (ChunkMachine cm : chunkMachines) {
-                if (cm.name.equals(host)) {
-                    cm.numChunks = numChunks;
-                    if (cm.freeSpace == freeSpace)
-                        needsSort = false;
-                    cm.freeSpace = freeSpace;
-                    found = true;
-                    break;
-                }
-            }
-            if (!found) {
-                System.out.println("Adding new chunk machine at " + host);
-                chunkMachines.add(new ChunkMachine(host, freeSpace, numChunks));
-            }
-            if (!needsSort)
-                chunkMachines.sort(ChunkMachine::compareTo);
         }
     }
 }

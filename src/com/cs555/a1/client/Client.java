@@ -21,6 +21,7 @@ public class Client {
         Scanner scanner = new Scanner(System.in);
         String input;
         boolean exit = false;
+        boolean result = false;
         System.out.println("Type a command and hit return. To see available commands, type 'help'");
         while (!exit) {
             System.out.print(">");
@@ -34,14 +35,12 @@ public class Client {
                     break;
                 case "read":
                     if (inputs.length == 2) {
-                        if (!processRead(inputs[1])) {
-                            System.out.println("File not found.");
-                        }
+                        result = processRead(inputs[1]);
                         break;
                     }
                 case "write":
                     if (inputs.length == 2) {
-                        processWrite(inputs[1]);
+                        result = processWrite(inputs[1]);
                         break;
                     }
                 default:
@@ -50,72 +49,81 @@ public class Client {
                     printHelp();
                     break;
             }
+
+            if (result) {
+                System.out.println("Success.");
+            } else {
+                System.out.println("Failure.");
+            }
         }
     }
 
-    private void processWrite(String fileName) {
+    private boolean processWrite(String fileName) {
+        boolean result = true;
         ArrayList<byte[]> chunks = chunkify(fileName);
         if (chunks == null) {
             System.out.println("Error reading file from disk");
-            return;
-        }
-        for (int i = 0; i < chunks.size(); i++) {
-            String chunkFilename = String.format("%s_chunk%s", fileName, Integer.toString(i+1));
-            try (
-                    Socket controllerSocket = new Socket(controllerMachine, controllerPort);
-                    DataInputStream controllerIn = new DataInputStream(controllerSocket.getInputStream());
-                    DataOutputStream controllerOut = new DataOutputStream(controllerSocket.getOutputStream())
-            ) {
-                controllerOut.writeUTF("write");
-                controllerOut.writeUTF(chunkFilename);
-                if (!controllerIn.readBoolean()) {
-                    System.out.println("Controller not accepting writes.");
-                    return;
+            result = false;
+        } else {
+            for (int i = 0; i < chunks.size(); i++) {
+                String chunkFilename = String.format("%s_chunk%s", fileName, Integer.toString(i + 1));
+                try (
+                        Socket controllerSocket = new Socket(controllerMachine, controllerPort);
+                        DataInputStream controllerIn = new DataInputStream(controllerSocket.getInputStream());
+                        DataOutputStream controllerOut = new DataOutputStream(controllerSocket.getOutputStream())
+                ) {
+                    controllerOut.writeUTF("write");
+                    controllerOut.writeUTF(chunkFilename);
+                    if (!controllerIn.readBoolean()) {
+                        System.out.println("Controller not accepting writes.");
+                        result = false;
+                        break;
+                    }
+                    int numServers = controllerIn.readInt();
+                    ArrayList<String> chunkServers = new ArrayList<>();
+                    for (int j = 0; j < numServers; j++)
+                        chunkServers.add(controllerIn.readUTF());
+                    controllerIn.close();
+                    controllerOut.close();
+                    controllerSocket.close();
+                    //now proceed to write to chunk server (with forwarding info)
+                    if (!Helper.writeToChunkServerWithForward(chunks.get(i), chunkFilename, chunkServers, chunkPort)) {
+                        result = false;
+                        break;
+                    }
+                } catch (IOException e) {
+                    System.out.println("Error opening socket connection.");
+                    e.printStackTrace();
+                    result = false;
                 }
-                int numServers = controllerIn.readInt();
-                ArrayList<String> chunkServers = new ArrayList<>();
-                for (int j = 0; j < numServers; j++)
-                    chunkServers.add(controllerIn.readUTF());
-                controllerIn.close();
-                controllerOut.close();
-                controllerSocket.close();
-                //now proceed to write to chunk server (with forwarding info)
-                if (!Helper.writeToChunkServerWithForward(chunks.get(i), chunkFilename, chunkServers, chunkPort)) {
-                    return;
-                }
-                System.out.println("Success");
-            } catch (IOException e) {
-                System.out.println("Error opening socket connection.");
-                e.printStackTrace();
             }
         }
+        return result;
     }
 
     private boolean processRead(String fileName) {
         boolean isSuccess = false;
         try {
-            if (new File(fileName).exists()) {
-                ArrayList<byte[]> chunks = new ArrayList<>();
-                for (int i = 0; i < Helper.readLimit; i++) {
-                    byte[] readChunk;
-                    String chunkFilename = String.format("%s_chunk%s", fileName, Integer.toString(i + 1));
-                    String readServer = Helper.readFromController(
-                            controllerMachine, controllerPort, chunkFilename, false, false);
-                    if (readServer == null)
-                        break;
-                    readChunk = Helper.readFromChunkServer(chunkFilename, readServer, chunkPort, 0, -1);
-                    chunks.add(readChunk);
-                    System.out.println("Successfully read " + chunkFilename);
-                }
-                if (chunks.size() == Helper.readLimit) {
-                    System.out.println("File too large (maximum number of chunks exceeded)");
-                    return isSuccess;
-                }
+            ArrayList<byte[]> chunks = new ArrayList<>();
+            for (int i = 0; i < Helper.readLimit; i++) {
+                byte[] readChunk;
+                String chunkFilename = String.format("%s_chunk%s", fileName, Integer.toString(i + 1));
+                String readServer = Helper.readFromController(
+                        controllerMachine, controllerPort, chunkFilename, false, false);
+                if (readServer == null)
+                    break;
+                if (Helper.debug) System.out.println("reading chunk from " + readServer);
+                readChunk = Helper.readFromChunkServer(chunkFilename, readServer, chunkPort, 0, -1);
+                chunks.add(readChunk);
+                if (Helper.debug) System.out.println("Successfully read " + chunkFilename);
+            }
+            if (chunks.size() == Helper.readLimit) {
+                System.out.println("File too large (maximum number of chunks exceeded)");
+            } else if (chunks.size() == 0) {
+                System.out.println("File not found");
+            } else {
                 dechunkify(fileName, chunks); // writes file to disk
                 isSuccess = true;
-                System.out.println("Success");
-            } else {
-                System.out.println("Please specify a valid filename");
             }
         } catch (IOException e) {
             e.printStackTrace();
@@ -147,7 +155,7 @@ public class Client {
             for (byte[] chunk : chunks)
                 fileOutputStream.write(chunk);
         } catch (IOException e) {
-            System.out.println("Client: Error writing file.");
+            if (Helper.debug) System.out.println("Client: Error writing file.");
             e.printStackTrace();
         }
     }

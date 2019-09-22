@@ -9,13 +9,12 @@ import java.net.Socket;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.HashMap;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class ChunkServer {
     private static class FailureResult {
@@ -46,15 +45,17 @@ public class ChunkServer {
     private int chunkPort;
     private ServerSocket ss;
     private boolean shutdown = false;
+    private volatile boolean needHeartbeat;
     //need to store the chunks that are at this server (filename with underscore and integer appended),
     //for each chunk we need version, and 8 SHA-1 hashes (1 per 8KB),
-    private HashMap<String, Chunk> chunks;
+    private final ConcurrentHashMap<String, Chunk> chunks;
 
     public ChunkServer(int controllerPort, String controllerMachine, int chunkPort) throws IOException {
         this.controllerPort = controllerPort;
         this.controllerMachine = controllerMachine;
         this.chunkPort = chunkPort;
-        this.chunks = new HashMap<>();
+        this.chunks = new ConcurrentHashMap<>();
+        this.needHeartbeat = true;
         ss = new ServerSocket(chunkPort);
         final Thread mainThread = Thread.currentThread();
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
@@ -75,7 +76,7 @@ public class ChunkServer {
     public void run() throws IOException, InterruptedException {
         // running infinite loop for getting
         // client request
-        Thread mT = new ChunkControllerHandler();
+        Thread mT = new ChunkHeartbeatHandler();
         mT.start();
         while (!shutdown)
         {
@@ -83,21 +84,10 @@ public class ChunkServer {
             Thread.sleep(100);
             try
             {
-                // socket object to receive incoming client requests
                 s = ss.accept();
-
-                System.out.println("A new client is connected : " + s);
-
-                // obtaining input and out streams
                 DataInputStream dis = new DataInputStream(s.getInputStream());
                 DataOutputStream dos = new DataOutputStream(s.getOutputStream());
-
-                System.out.println("Assigning new thread for this client");
-
-                // create a new thread object
-                Thread t = new ChunkClientHandler(dis, dos);
-
-                // Invoking the start() method
+                Thread t = new ChunkRequestHandler(dis, dos);
                 t.start();
 
             }
@@ -110,35 +100,31 @@ public class ChunkServer {
         }
     }
 
-    private class ChunkControllerHandler extends Thread {
+    private class ChunkHeartbeatHandler extends Thread {
         @Override
         public void run() {
             Instant start = Instant.now();
             int numMinor = 0;
-            boolean isMajor = false;
-            boolean justBooted = true;
+            boolean isMajor;
+            boolean firstRun = true;
             while (true) {
-                try {
-                    Thread.sleep(100);
-                } catch (InterruptedException e) {
-                    System.out.println("Heartbeat thread interrupted, stopping");
-                    return;
-                }
-                if (justBooted || Duration.between(start, Instant.now()).toSeconds() > Helper.MinorHeartbeatSeconds) {
-                    justBooted = false;
+                if (needHeartbeat || Duration.between(start, Instant.now()).toSeconds() > Helper.MinorHeartbeatSeconds){
                     start = Instant.now();
-                    if (numMinor == Helper.MajorHeartbeatSeconds / Helper.MinorHeartbeatSeconds) {
+                    if (firstRun || (numMinor >= Helper.MajorHeartbeatSeconds / Helper.MinorHeartbeatSeconds && !needHeartbeat)) {
+                        firstRun = false;
                         isMajor = true;
                         numMinor = 0;
+                    } else {
+                        isMajor = false;
+                        numMinor++;
                     }
-                    System.out.println("Sending heartbeat to controller, ismajor = " + isMajor);
+                    if (Helper.debug) System.out.println("Sending heartbeat to controller, ismajor = " + isMajor);
                     try (
                             Socket s = new Socket(controllerMachine, controllerPort);
                             DataOutputStream out = new DataOutputStream(s.getOutputStream())
                     ) {
                         out.writeUTF("heartbeat");
                         out.writeBoolean(isMajor);
-                        out.writeInt(Helper.space);
                         out.writeInt(chunks.size());
                         int numChunks = 0;
                         if (!isMajor) {
@@ -159,26 +145,26 @@ public class ChunkServer {
                                 out.writeUTF(chunk.fileName);
                             }
                         }
+
                     } catch (IOException e) {
+                        if (Helper.debug) System.out.println("Error while sending heartbeat.");
                         e.printStackTrace();
                         dumpStack();
-                    } finally {
-                        isMajor = false;
-                        numMinor++;
                     }
+                    needHeartbeat = false;
                 }
             }
         }
     }
 
     // ClientHandler class
-    class ChunkClientHandler extends Thread
+    class ChunkRequestHandler extends Thread
     {
         private final DataInputStream in;
         private final DataOutputStream out;
 
         // Constructor
-        ChunkClientHandler(DataInputStream in, DataOutputStream out)
+        ChunkRequestHandler(DataInputStream in, DataOutputStream out)
         {
             this.in = in;
             this.out = out;
@@ -188,50 +174,15 @@ public class ChunkServer {
         public void run()
         {
             try {
-                String fileName;
-                int fileSize;
-                byte[] fileContents = new byte[0];
                 String verb = in.readUTF();
                 switch (verb) {
-                    case "write" :
-                        boolean isForwarded = true;
-                        fileName = in.readUTF();
-                        fileSize = in.readInt();  // likely 64k, but check anyway (could be last chunk)
-                        int numForwards = in.readInt();
-                        ArrayList<String> forwards = new ArrayList<>();
-                        for (int i = 0; i < numForwards; i++)
-                            forwards.add(in.readUTF());
-                        fileContents = new byte[fileSize];
-                        in.readFully(fileContents);
-                        boolean isWritten = writeChunk(fileName, fileContents, 0);
-                        if (!forwards.isEmpty() && isWritten)
-                            isForwarded = Helper.writeToChunkServerWithForward(
-                                    fileContents, fileName, forwards, chunkPort);
-                        out.writeBoolean(isForwarded && isWritten);
+                    case "write":
+                        handleWrite();
                         break;
-                    case "read" :
-                        fileName = in.readUTF();
-                        int offset = in.readInt();
-                        int length = in.readInt();
-                        if (chunks.containsKey(fileName)) {
-                            FailureResult result = readChunk(fileName, offset, length);
-                            if (!result.sliceFailureRanges.isEmpty()) {  //failure detected
-                                fileContents = getRecoveredChunk(fileName, fileContents, result);
-                            } else {
-                                fileContents = result.contents;
-                            }
-                            if (fileContents == null) // recovery failed
-                                out.writeInt(0);
-                            else {
-                                out.writeInt(fileContents.length);
-                                out.write(fileContents);
-                            }
-                        } else {
-                            out.writeInt(0);
-                        }
+                    case "read":
+                        handleRead();
                         break;
-                    case "heartbeat" :  // tell the controller we are still here
-                        System.out.println("Responding to controller heartbeat");
+                    case "heartbeat":  // tell the controller we are still here
                         out.writeBoolean(true);
                         break;
                     default:
@@ -243,21 +194,73 @@ public class ChunkServer {
             } catch (IOException e) {
                 e.printStackTrace();
             }
+
         }
 
-        private byte[] getRecoveredChunk(String fileName, byte[] fileContents, FailureResult result) {
+        private void handleRead() throws IOException {
+            String fileName;
+            byte[] fileContents;
+            fileName = in.readUTF();
+            int offset = in.readInt();
+            int length = in.readInt();
+            if (chunks.containsKey(fileName)) {
+                FailureResult result = readChunk(fileName, offset, length);
+                if (!result.sliceFailureRanges.isEmpty()) {  //failure detected
+                    if (Helper.debug) System.out.println("failure detected for " + fileName);
+                    fileContents = getRecoveredChunk(fileName, result);
+                } else {
+                    fileContents = result.contents;
+                }
+                if (fileContents == null) // recovery failed
+                    out.writeInt(0);
+                else {
+                    if (Helper.debug) System.out.println("Serving file to client");
+                    out.writeInt(fileContents.length);
+                    out.write(fileContents);
+                }
+            } else {
+                out.writeInt(0);
+            }
+        }
+
+        private void handleWrite() throws IOException {
+            String fileName;
+            int fileSize;
+            byte[] fileContents;
+            boolean isForwarded = true;
+            fileName = in.readUTF();
+            fileSize = in.readInt();  // likely 64k, but check anyway (could be last chunk)
+            int numForwards = in.readInt();
+            ArrayList<String> forwards = new ArrayList<>();
+            for (int i = 0; i < numForwards; i++)
+                forwards.add(in.readUTF());
+            fileContents = new byte[fileSize];
+            in.readFully(fileContents);
+            boolean isWritten = writeChunk(fileName, fileContents, 0);
+            if (!forwards.isEmpty() && isWritten)
+                isForwarded = Helper.writeToChunkServerWithForward(
+                        fileContents, fileName, forwards, chunkPort);
+            out.writeBoolean(isForwarded && isWritten);
+        }
+
+        private byte[] getRecoveredChunk(String fileName, FailureResult result) {
+            byte[] fileContents = new byte[0];
             try {
                 for (FailureResult.SliceFailureRange range : result.sliceFailureRanges) {
                     String readServer = Helper.readFromController(
                             controllerMachine, controllerPort, fileName, true, true);
                     if (readServer == null)
-                        throw new IOException(); // controller can't help us
+                        throw new IOException("Controller request denied.");
+                    if (Helper.debug)
+                        System.out.printf("Requesting slice/chunk from %s offset %d length %d%n",
+                                readServer, range.offset, range.length);
                     fileContents = Helper.readFromChunkServer(
                             fileName, readServer, chunkPort, range.offset, range.length);
+                    if (Helper.debug) System.out.println("writing file to disk");
                     writeChunk(fileName, fileContents, range.offset);
                 }
             } catch (IOException e) {
-                System.out.println("Recovery failed");
+                if (Helper.debug) System.out.println("Recovery failed");
                 e.printStackTrace();
             }
             return fileContents;
@@ -268,6 +271,7 @@ public class ChunkServer {
                 String fullPath = Paths.get(Helper.chunkHome, fileName).toString();
                 FileInputStream fileInputStream = new FileInputStream(fullPath);
                 byte[] contents;
+                if (Helper.debug) System.out.printf("Reading file %s offset %d length %d%n", fileName, offset, length);
                 long skipped = fileInputStream.skip(offset);
                 if (skipped != offset)
                     throw new IOException("Read failure");
@@ -312,7 +316,10 @@ public class ChunkServer {
                 byte[] slice = Arrays.copyOfRange(contents, sliceStart, sliceEnd);
                 byte[] newHash = Helper.getSHA1(slice);
                 if (!Arrays.equals(oldHash, newHash)) {
-                    result.add(sliceStart, sliceEnd);
+                    if (sliceEnd == contents.length)
+                        result.add(sliceStart, -1);
+                    else
+                        result.add(sliceStart, sliceEnd-sliceStart);
                 }
             }
             return result;
@@ -336,32 +343,38 @@ public class ChunkServer {
                     Files.createDirectories(chunkHome);
 
                 File file = new File(Paths.get(Helper.chunkHome, fileName).toString());
-                if (file.exists() && chunks.containsKey(fileName)) {
-                    Chunk chunk = chunks.get(fileName);
-                    chunk.version++;
-                    chunk.isNew = true;
-                } else {
-                    Chunk chunk = new Chunk();
-                    chunk.fileName = fileName;
-                    chunk.version = 1;
-                    String[] splits = fileName.split("_");
-                    chunk.sequence = Integer.parseInt(splits[splits.length - 1].replace("chunk", ""));
-                    chunks.put(fileName, chunk);
+                synchronized (chunks) {
+                    if (file.exists() && chunks.containsKey(fileName)) {
+                        Chunk chunk = chunks.get(fileName);
+                        if (slicesOffset == 0) //an update, not a recovery
+                            chunk.version++;
+                        chunk.isNew = true;
+                    } else {
+                        Chunk chunk = new Chunk();
+                        chunk.fileName = fileName;
+                        chunk.version = 1;
+                        String[] splits = fileName.split("_");
+                        chunk.sequence = Integer.parseInt(splits[splits.length - 1].replace("chunk", ""));
+                        chunks.put(fileName, chunk);
+                    }
                 }
 
                 byte[] hashes = new byte[numSlices * Helper.BpHash];
-                for (int i = numSlicesOffset; i < numSlicesOffset + numSlices; i++) {
+                for (int i = 0; i < numSlices; i++) {
                     int sliceStart = i*Helper.BpSlice;
                     int sliceEnd = Integer.min(sliceStart + Helper.BpSlice, contents.length);
                     byte[] hash = Helper.getSHA1(Arrays.copyOfRange(contents, sliceStart, sliceEnd));
                     System.arraycopy(hash, 0, hashes, i*Helper.BpHash, hash.length);
                 }
 
-                FileOutputStream hashStream = new FileOutputStream(file.getPath() + ".sha1");
-                hashStream.write(hashes, hashesOffset, hashes.length);
+                RandomAccessFile hashStream = new RandomAccessFile(file.getPath() + ".sha1", "rw");
+                hashStream.seek(hashesOffset);
+                hashStream.write(hashes);
 
-                FileOutputStream chunkStream = new FileOutputStream(file.getPath());
-                chunkStream.write(contents, slicesOffset, contents.length);
+                RandomAccessFile chunkStream = new RandomAccessFile(file.getPath(), "rw");
+                chunkStream.seek(slicesOffset);
+                chunkStream.write(contents);
+                needHeartbeat = true;
                 return true;
             } catch (Exception e) {
                 e.printStackTrace();
