@@ -214,7 +214,7 @@ public class Controller {
                         System.out.println("heartbeat processed, chunk machines: " + chunkMachines.toString());
                         break;
                     case "taddle":
-                        removeChunk();
+                        removeChunk(host);
                         break;
                     default:
                         //out.writeUTF("Invalid input");
@@ -228,12 +228,14 @@ public class Controller {
             }
         }
 
-        private void removeChunk() throws IOException {
+        private void removeChunk(String host) throws IOException {
             String fileName = in.readUTF();
             int numMachines = in.readInt();
             ArrayList<String> machines = new ArrayList<>();
             for (int i = 0; i < numMachines; i++)
                 machines.add(in.readUTF());
+            if (numMachines == 0)
+                machines.add(host);
             System.out.println("Taddle: Removing file " + fileName + " from machines " + machines);
             synchronized (chunkMachines) {
                 synchronized (chunksToMachines) {

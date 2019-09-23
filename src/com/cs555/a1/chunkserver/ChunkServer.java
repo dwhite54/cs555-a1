@@ -220,6 +220,7 @@ public class ChunkServer {
                 if (fileContents == null) { // recovery failed
                     out.writeInt(0);
                     chunks.remove(fileName);
+                    Helper.processTaddle(controllerMachine, controllerPort, fileName, new ArrayList<>());
                 }
                 else {
                     System.out.println("Serving file to client");
