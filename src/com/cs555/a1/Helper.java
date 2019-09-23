@@ -6,6 +6,7 @@ import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.net.Socket;
+import java.nio.ByteBuffer;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
@@ -26,43 +27,51 @@ public class Helper {
     public static final int DATA_SHARDS = 6;
     public static final int PARITY_SHARDS = 3;
     public static final int TOTAL_SHARDS = 9;
+    public static final int BYTES_IN_INT = 4;
 
     private static int _replicationFactor = 3;
     public static int replicationFactor = useReplication ? _replicationFactor : 1;
 
     public static byte[][] erasureEncode(byte[] input) {
-        int shardSize = (input.length + DATA_SHARDS - 1) / DATA_SHARDS;
+        final int storedSize = input.length + BYTES_IN_INT;
+        final int shardSize = (storedSize + DATA_SHARDS - 1) / DATA_SHARDS;
         int bufferSize = shardSize * DATA_SHARDS;
         byte[] allBytes = new byte[bufferSize];
-        System.arraycopy(input, 0, allBytes, 0, input.length);
-        byte[][] shards = new byte[TOTAL_SHARDS][shardSize];
-        for (int i = 0; i < DATA_SHARDS; i++) {
+        ByteBuffer.wrap(allBytes).putInt(input.length);
+        System.arraycopy(input, 0, allBytes, BYTES_IN_INT, input.length);
+        byte[][] shards = new byte[Helper.TOTAL_SHARDS][shardSize];
+        for (int i = 0; i < Helper.DATA_SHARDS; i++) {
             System.arraycopy(allBytes, i * shardSize, shards[i], 0, shardSize);
         }
-        ReedSolomon reedSolomon = new ReedSolomon(DATA_SHARDS, PARITY_SHARDS);
+        ReedSolomon reedSolomon = new ReedSolomon(Helper.DATA_SHARDS, Helper.PARITY_SHARDS);
         reedSolomon.encodeParity(shards, 0, shardSize);
         return shards;
     }
 
-    public static boolean erasureDecode(byte[][] shards, boolean[] shardPresent) {
+    public static byte[] erasureDecode(byte[][] shards, boolean[] shardPresent, int shardSize) {
         int shardCount = 0;
-
-        for (boolean b : shardPresent) {
-            if (b) {
+        for (int i = 0; i < shardPresent.length; i++) {
+            if (shardPresent[i]) {
                 shardCount++;
+            } else {
+                shards[i] = new byte[shardSize];
             }
         }
-
-        // We need at least DATA_SHARDS to be able to reconstruct the file.
         if (shardCount < DATA_SHARDS) {
             System.out.println("Not enough shards present");
-            return false;
+            return null;
         }
-
-        ReedSolomon reedSolomon = new ReedSolomon(DATA_SHARDS, PARITY_SHARDS);
-        reedSolomon.decodeMissing(shards, shardPresent, 0, shards[0].length);
-
-        return true;
+        ReedSolomon reedSolomon = new ReedSolomon(Helper.DATA_SHARDS, Helper.PARITY_SHARDS);
+        reedSolomon.decodeMissing(shards, shardPresent, 0, shardSize);
+        byte [] allBytes = new byte [shardSize * DATA_SHARDS];
+        for (int i = 0; i < DATA_SHARDS; i++) {
+            System.arraycopy(shards[i], 0, allBytes, shardSize * i, shardSize);
+        }
+        // Extract the file length
+        int fileSize = ByteBuffer.wrap(allBytes).getInt();
+        byte[] output = new byte[fileSize];
+        System.arraycopy(allBytes, BYTES_IN_INT, output, 0, output.length);
+        return output;
     }
 
     public static byte[] getSHA1(byte[] chunk) throws NoSuchAlgorithmException {
@@ -127,7 +136,7 @@ public class Helper {
             chunkOut.writeInt(length);
             int fileSize = chunkIn.readInt();
             if (fileSize == 0) {
-                throw new IOException("File read error");
+                return null;
             }
             byte[] chunk = new byte[fileSize];
             chunkIn.readFully(chunk);

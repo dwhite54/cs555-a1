@@ -117,27 +117,41 @@ public class Client {
 
     private boolean processRead(String fileName) {
         boolean isSuccess = false;
+        boolean needsRedispersed = false;
         try {
             ArrayList<byte[]> chunks = new ArrayList<>();
-            for (int i = 0; i < Helper.readLimit; i++) {
-                byte[] readChunk;
+            int searchLimit = Helper.useReplication ? Helper.readLimit : Helper.TOTAL_SHARDS;
+            for (int i = 0; i < searchLimit; i++) {
                 String chunkFilename = String.format("%s_chunk%s", fileName, Integer.toString(i + 1));
                 String readServer = Helper.readFromController(
                         controllerMachine, controllerPort, chunkFilename, false, false);
-                if (readServer == null)
-                    break;
-                if (Helper.debug) System.out.println("reading chunk from " + readServer);
-                readChunk = Helper.readFromChunkServer(chunkFilename, readServer, chunkPort, 0, -1);
+                if (readServer == null) {  // controller can't find file
+                    System.out.println("File not found");
+                    if (!Helper.useReplication) { // if erasure, we know it's there, so call it missing
+                        chunks.add(null);
+                        needsRedispersed = true;
+                        continue;
+                    } else
+                        break;
+                }
+                if (Helper.debug) System.out.println("Reading " + chunkFilename + " from " + readServer);
+                byte[] readChunk = Helper.readFromChunkServer(chunkFilename, readServer, chunkPort, 0, -1);
+                if (Helper.useReplication && readChunk == null)
+                    throw new IOException("Chunk server fatal read error.");
+                else if (readChunk == null)
+                    needsRedispersed = true;
                 chunks.add(readChunk);
-                if (Helper.debug) System.out.println("Successfully read " + chunkFilename);
             }
             if (chunks.size() == Helper.readLimit) {
                 System.out.println("File too large (maximum number of chunks exceeded)");
-            } else if (chunks.size() == 0) {
-                System.out.println("File not found");
             } else {
                 decode(fileName, chunks); // writes file to disk
                 isSuccess = true;
+            }
+
+            if (needsRedispersed && isSuccess) {
+                System.out.println("Shard missing, redispersing (entire) file...");
+                processWrite(fileName);
             }
         } catch (IOException e) {
             e.printStackTrace();
@@ -158,8 +172,16 @@ public class Client {
                 }
             }
             byte[][] shards = new byte[chunks.size()][shardSize];
-            if (Helper.erasureDecode(shards, shardsPresent))
-                dechunkifyArray(fileName, shards);
+            for (int i = 0; i < shards.length; i++) {
+                if (chunks.get(i) != null) {
+                    System.arraycopy(chunks.get(i), 0, shards[i], 0, shardSize);
+                }
+            }
+            byte[] output = Helper.erasureDecode(shards, shardsPresent, shardSize);
+            if (output != null) {
+                FileOutputStream fileOutputStream = new FileOutputStream(fileName);
+                fileOutputStream.write(output);
+            }
         } else {
             dechunkifyList(fileName, chunks);
         }
@@ -193,8 +215,8 @@ public class Client {
 
     private void dechunkifyList(String fileName, ArrayList<byte[]> chunks) throws IOException {
         FileOutputStream fileOutputStream = new FileOutputStream(fileName);
-        for (int i = 0; i < chunks.size(); i++) {
-            fileOutputStream.write(chunks.get(i));
+        for (byte[] chunk : chunks) {
+            fileOutputStream.write(chunk);
         }
     }
 

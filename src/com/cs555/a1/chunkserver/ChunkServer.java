@@ -284,6 +284,8 @@ public class ChunkServer {
             try {
                 String fullPath = Paths.get(Helper.chunkHome, fileName).toString();
                 FileInputStream fileInputStream = new FileInputStream(fullPath);
+                if (!Helper.useReplication)
+                    return new FailureResult(fileInputStream.readAllBytes());
                 byte[] contents;
                 if (Helper.debug) System.out.printf("Reading file %s offset %d length %d%n", fileName, offset, length);
                 long skipped = fileInputStream.skip(offset);
@@ -293,10 +295,7 @@ public class ChunkServer {
                     contents = fileInputStream.readAllBytes();
                 } else
                     contents = fileInputStream.readNBytes(length);
-                if (Helper.useReplication)
-                    return validateChunk(fileName, contents, offset);
-                else
-                    return new FailureResult(contents);  //no chunk server validation for erasure coding
+                return validateChunk(fileName, contents, offset);
             } catch (IOException | NoSuchAlgorithmException e) {
                 e.printStackTrace();
                 FailureResult result = new FailureResult(null);
