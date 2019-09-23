@@ -118,7 +118,7 @@ public class ChunkServer {
                         isMajor = false;
                         numMinor++;
                     }
-                    if (Helper.debug) System.out.println("Sending heartbeat to controller, ismajor = " + isMajor);
+                    System.out.println("Sending heartbeat to controller, ismajor = " + isMajor);
                     try (
                             Socket s = new Socket(controllerMachine, controllerPort);
                             DataOutputStream out = new DataOutputStream(s.getOutputStream())
@@ -147,7 +147,7 @@ public class ChunkServer {
                         }
 
                     } catch (IOException e) {
-                        if (Helper.debug) System.out.println("Error while sending heartbeat.");
+                        System.out.println("Error while sending heartbeat.");
                         e.printStackTrace();
                         dumpStack();
                     }
@@ -206,7 +206,7 @@ public class ChunkServer {
             if (chunks.containsKey(fileName)) {
                 FailureResult result = readChunk(fileName, offset, length);
                 if (!result.sliceFailureRanges.isEmpty()) {  //failure detected
-                    if (Helper.debug) System.out.println("failure detected for " + fileName);
+                    System.out.println("failure detected for " + fileName);
                     FailureResult recoverResult = getRecoveredChunk(fileName, result, offset, length);
                     if (recoverResult != null && recoverResult.sliceFailureRanges.isEmpty())
                         fileContents = recoverResult.contents;
@@ -217,10 +217,12 @@ public class ChunkServer {
                     fileContents = result.contents;
                 }
                 //now respond to requester
-                if (fileContents == null) // recovery failed
+                if (fileContents == null) { // recovery failed
                     out.writeInt(0);
+                    chunks.remove(fileName);
+                }
                 else {
-                    if (Helper.debug) System.out.println("Serving file to client");
+                    System.out.println("Serving file to client");
                     out.writeInt(fileContents.length);
                     out.write(fileContents);
                 }
@@ -274,7 +276,7 @@ public class ChunkServer {
                 }
                 return readChunk(fileName, originalOffset, originalLength);
             } catch (IOException e) {
-                if (Helper.debug) System.out.println("Recovery failed");
+                System.out.println("Recovery failed");
                 e.printStackTrace();
                 return null;
             }
@@ -287,7 +289,7 @@ public class ChunkServer {
                 if (!Helper.useReplication)
                     return new FailureResult(fileInputStream.readAllBytes());
                 byte[] contents;
-                if (Helper.debug) System.out.printf("Reading file %s offset %d length %d%n", fileName, offset, length);
+                System.out.printf("Reading file %s offset %d length %d%n", fileName, offset, length);
                 long skipped = fileInputStream.skip(offset);
                 if (skipped != offset)
                     throw new IOException("Read failure");
@@ -299,7 +301,8 @@ public class ChunkServer {
             } catch (IOException | NoSuchAlgorithmException e) {
                 e.printStackTrace();
                 FailureResult result = new FailureResult(null);
-                result.add(offset, length);
+                if (Helper.useReplication)
+                    result.add(offset, length);
                 return result;
             }
         }
@@ -391,7 +394,7 @@ public class ChunkServer {
                 RandomAccessFile chunkStream = new RandomAccessFile(file.getPath(), "rw");
                 chunkStream.seek(slicesOffset);
                 chunkStream.write(contents);
-                needHeartbeat = true;
+                //needHeartbeat = true;
                 return true;
             } catch (Exception e) {
                 e.printStackTrace();

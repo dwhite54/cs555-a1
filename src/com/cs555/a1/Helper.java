@@ -19,8 +19,8 @@ public class Helper {
     public static String chunkHome = "/tmp/dwhite54/chunks";
     public static int space = 10000;
     public static int readLimit = 1000;  // if each chunk is 64KB (64 * 2^10) then this is about 66mB
-    public static int MajorHeartbeatSeconds = 60;//300;
-    public static int MinorHeartbeatSeconds = 1;//30;
+    public static int MajorHeartbeatSeconds = 300;
+    public static int MinorHeartbeatSeconds = 30;
     public static boolean debug = true;
     public static boolean useReplication = false;
 
@@ -103,7 +103,7 @@ public class Helper {
                 DataOutputStream chunkOut = new DataOutputStream(chunkSocket.getOutputStream())
         ) {
             chunkOut.writeUTF("write");
-            if (Helper.debug) System.out.println("writing " + chunkFilename + " to " + chunkServer + " with forward " + chunkServers.toString());
+            System.out.println("writing " + chunkFilename + " to " + chunkServer + " with forward " + chunkServers.toString());
             chunkOut.writeUTF(chunkFilename);
             chunkOut.writeInt(chunk.length);
             chunkOut.writeInt(chunkServers.size());
@@ -112,11 +112,11 @@ public class Helper {
             if (chunk.length > 0)
                 chunkOut.write(chunk);
             if (!chunkIn.readBoolean()) {
-                if (Helper.debug) System.out.println("Failed writing file to chunk server: " + chunkFilename);
+                System.out.println("Failed writing file to chunk server: " + chunkFilename);
                 return false;
             }
         } catch (IOException e) {
-            if (Helper.debug) System.out.println("Couldn't open socket connection to " + chunkServer + ":" + chunkPort);
+            System.out.println("Couldn't open socket connection to " + chunkServer + ":" + chunkPort);
             e.printStackTrace();
             return false;
         }
@@ -161,6 +161,21 @@ public class Helper {
             } else {
                 return null;
             }
+        }
+    }
+
+    public static void processTaddle(
+            String controllerMachine, int controllerPort, String fileName, ArrayList<String> machines) throws IOException {
+        try (
+                Socket controllerSocket = new Socket(controllerMachine, controllerPort);
+                DataInputStream controllerIn = new DataInputStream(controllerSocket.getInputStream());
+                DataOutputStream controllerOut = new DataOutputStream(controllerSocket.getOutputStream())
+        ) {
+            controllerOut.writeUTF("taddle");
+            controllerOut.writeUTF(fileName);
+            controllerOut.writeInt(machines.size());
+            for (String machine : machines)
+                controllerOut.writeUTF(machine);
         }
     }
 }

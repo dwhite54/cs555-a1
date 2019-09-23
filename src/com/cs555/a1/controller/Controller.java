@@ -9,6 +9,8 @@ import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
+import static com.cs555.a1.Helper.replicationFactor;
+
 public class Controller {
 
     static class ChunkMachine implements Comparable<ChunkMachine> {
@@ -112,7 +114,7 @@ public class Controller {
                 try {
                     Thread.sleep(1000);
                 } catch (InterruptedException e) {
-                    if (Helper.debug) System.out.println("Heartbeat thread interrupted, stopping");
+                    System.out.println("Heartbeat thread interrupted, stopping");
                     return;
                 }
                 if (Duration.between(start, Instant.now()).toSeconds() > Helper.MinorHeartbeatSeconds) {
@@ -163,7 +165,7 @@ public class Controller {
                     ArrayList<String> serverList = new ArrayList<>();
                     serverList.add(first);
                     // add servers which don't contain the chunk (so not already in the set)
-                    for (int i = 0; serverList.size() + servers.size() - 1 < Helper.replicationFactor
+                    for (int i = 0; serverList.size() + servers.size() - 1 < replicationFactor
                             && i < chunkMachines.size(); i++) {
                         String candidate = chunkMachines.get(chunkMachines.size() - 1).name;
                         if (!servers.contains(candidate))
@@ -208,12 +210,14 @@ public class Controller {
                         handleRead(host);
                         break;
                     case "heartbeat":
-                        //if (Helper.debug) System.out.println("processing heartbeat from " + host);
                         processHeartbeat(host, in);
-                        //if (Helper.debug) System.out.println("chunk machines: " + chunkMachines.toString());
+                        System.out.println("heartbeat processed, chunk machines: " + chunkMachines.toString());
+                        break;
+                    case "taddle":
+                        removeChunk();
                         break;
                     default:
-                        out.writeUTF("Invalid input");
+                        //out.writeUTF("Invalid input");
                         break;
                 }
                 this.in.close();
@@ -221,6 +225,31 @@ public class Controller {
                 this.s.close();
             } catch (IOException e) {
                 e.printStackTrace();
+            }
+        }
+
+        private void removeChunk() throws IOException {
+            String fileName = in.readUTF();
+            int numMachines = in.readInt();
+            ArrayList<String> machines = new ArrayList<>();
+            for (int i = 0; i < numMachines; i++)
+                machines.add(in.readUTF());
+            System.out.println("Taddle: Removing file " + fileName + " from machines " + machines);
+            synchronized (chunkMachines) {
+                synchronized (chunksToMachines) {
+                    for (String machine : machines) {
+                        HashSet<String> machineSet = chunksToMachines.get(fileName);
+                        if (machineSet != null && machineSet.remove(machine)) {
+                            for (ChunkMachine cm : chunkMachines) {
+                                if (cm.name.equals(machine)) {
+                                    cm.freeSpace++;
+                                    cm.numChunks--;
+                                }
+                            }
+                        }
+                    }
+                    chunkMachines.sort(ChunkMachine::compareTo);
+                }
             }
         }
 
@@ -250,30 +279,46 @@ public class Controller {
 
         private void handleWrite() throws IOException {
             String fileName;
-            fileName = in.readUTF();
-            // we need up-to-date sorting (from heartbeats)
-            List<ChunkMachine> synchronizedList = Collections.synchronizedList(chunkMachines);
-            if (synchronizedList.isEmpty()) {
-                out.writeBoolean(false);
-            } else if (synchronizedList.get(synchronizedList.size() - 1).freeSpace <= 0) {
-                out.writeBoolean(false);
-            } else {
-                out.writeBoolean(true);
-                HashSet<String> writeMachines = chunksToMachines.getOrDefault(fileName, new HashSet<>());
-                int replicationFactor = Integer.min(Helper.replicationFactor, synchronizedList.size());
-                // send to servers which have it first
-                // then to servers which have the most room (up to replication factor)
-                out.writeInt(replicationFactor);
-                for (String machine : writeMachines) {
-                    out.writeUTF(machine);
-                }
-                int numSent = writeMachines.size();
-                for (int i = 0; numSent < replicationFactor; i++) {
-                    String bestServer = synchronizedList.get(synchronizedList.size() - 1 - i).name;
-                    if (!writeMachines.contains(bestServer)) {
-                        out.writeUTF(bestServer);
-                        numSent++;
+            synchronized (chunkMachines) {
+                synchronized (chunksToMachines) {
+                    fileName = in.readUTF();
+                    // we need up-to-date sorting (from heartbeats)
+                    if (chunkMachines.isEmpty()) {
+                        out.writeBoolean(false);
+                    } else if (chunkMachines.get(chunkMachines.size() - 1).freeSpace <= 0) {
+                        out.writeBoolean(false);
+                    } else {
+                        out.writeBoolean(true);
+                        HashSet<String> writeMachines = chunksToMachines.computeIfAbsent(fileName, k -> new HashSet<>());
+                        int replicationFactor = Integer.min(Helper.replicationFactor, chunkMachines.size());
+                        // send to servers which have it first
+                        // then to servers which have the most room (up to replication factor)
+                        out.writeInt(replicationFactor);
+                        for (String machine : writeMachines) {
+                            out.writeUTF(machine);
+                        }
+                        int numSent = writeMachines.size();
+                        for (int i = 0; numSent < replicationFactor; i++) {
+                            String bestServer = chunkMachines.get(chunkMachines.size() - 1 - i).name;
+                            if (!writeMachines.contains(bestServer)) {
+                                out.writeUTF(bestServer);
+                                decrementSpace(bestServer);
+                                writeMachines.add(bestServer);
+                                numSent++;
+                            }
+                        }
+                        chunkMachines.sort(ChunkMachine::compareTo);
                     }
+                }
+            }
+        }
+
+        private void decrementSpace(String chunkServer) {
+            for (ChunkMachine m : chunkMachines) {
+                if (m.name.equals(chunkServer)) {
+                    m.numChunks++;
+                    m.freeSpace--;
+                    return;
                 }
             }
         }
@@ -333,7 +378,7 @@ public class Controller {
                         }
                     }
                     if (!found) {
-                        //if (Helper.debug) System.out.println("Adding new chunk machine at " + host);
+                        //System.out.println("Adding new chunk machine at " + host);
                         chunkMachines.add(new ChunkMachine(host, freeSpace, numChunks));
                     }
                     if (!needsSort)

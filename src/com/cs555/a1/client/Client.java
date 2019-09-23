@@ -88,6 +88,7 @@ public class Client {
                     controllerSocket.close();
                     //now proceed to write to chunk server (with forwarding info)
                     if (!Helper.writeToChunkServerWithForward(chunks[i], chunkFilename, chunkServers, chunkPort)) {
+                        Helper.processTaddle(controllerMachine, controllerPort, chunkFilename, chunkServers);
                         result = false;
                         break;
                     }
@@ -134,19 +135,19 @@ public class Client {
                     } else
                         break;
                 }
-                if (Helper.debug) System.out.println("Reading " + chunkFilename + " from " + readServer);
+                System.out.println("Reading " + chunkFilename + " from " + readServer);
                 byte[] readChunk = Helper.readFromChunkServer(chunkFilename, readServer, chunkPort, 0, -1);
                 if (Helper.useReplication && readChunk == null)
                     throw new IOException("Chunk server fatal read error.");
-                else if (readChunk == null)
+                else if (readChunk == null) {
                     needsRedispersed = true;
+                }
                 chunks.add(readChunk);
             }
             if (chunks.size() == Helper.readLimit) {
                 System.out.println("File too large (maximum number of chunks exceeded)");
             } else {
-                decode(fileName, chunks); // writes file to disk
-                isSuccess = true;
+                isSuccess = decode(fileName, chunks); // writes file to disk
             }
 
             if (needsRedispersed && isSuccess) {
@@ -159,7 +160,7 @@ public class Client {
         return isSuccess;
     }
 
-    private void decode(String fileName, ArrayList<byte[]> chunks) throws IOException {
+    private boolean decode(String fileName, ArrayList<byte[]> chunks) throws IOException {
         if (!Helper.useReplication) {
             int shardSize = 0;
 
@@ -181,10 +182,13 @@ public class Client {
             if (output != null) {
                 FileOutputStream fileOutputStream = new FileOutputStream(fileName);
                 fileOutputStream.write(output);
+            } else {
+                return false;
             }
         } else {
             dechunkifyList(fileName, chunks);
         }
+        return true;
     }
 
     private byte[][] chunkify(byte[] contents) {

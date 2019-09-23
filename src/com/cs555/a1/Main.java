@@ -66,14 +66,14 @@ public class Main {
                         break;
                 }
             } catch (RangeException | IllegalArgumentException e) {  //catch range and parsing errors
-                if (Helper.debug) System.out.println("Error parsing arguments");
+                System.out.println("Error parsing arguments");
                 printUsage();
                 e.printStackTrace();
             }
         }
 
         if (controllerMachine.equals("") || controllerPort == 0 || chunkPort == 0) {
-            if (Helper.debug) System.out.println("Incomplete arguments provided");
+            System.out.println("Incomplete arguments provided");
             printUsage();
             return;
         } // ignore other cases, since those should be managed programmatically
@@ -109,7 +109,7 @@ public class Main {
 
         for (Process p : Processes) {
             if (!p.isAlive() && p.exitValue() == 255) {
-                if (Helper.debug) System.out.printf("Process %s closed with -1 exit value%n", p.toString());
+                System.out.printf("Process %s closed with -1 exit value%n", p.toString());
                 getProcessOutput(p);
                 Close();
                 System.exit(-1);
@@ -125,22 +125,22 @@ public class Main {
             input = new String(p.getInputStream().readAllBytes());
             errors = new String(p.getErrorStream().readAllBytes());
         } catch (IOException e) {
-            if (Helper.debug) System.out.println("Error occurred reading input and error streams:" + e.getMessage());
+            System.out.println("Error occurred reading input and error streams:" + e.getMessage());
             Close();
             System.exit(-1);
         }
-        if (Helper.debug) System.out.printf("InputStream: %s%n", input);
-        if (Helper.debug) System.out.printf("ErrorStream: %s%n", errors);
+        System.out.printf("InputStream: %s%n", input);
+        System.out.printf("ErrorStream: %s%n", errors);
     }
 
     private static void printUsage() {
-        if (Helper.debug) System.out.println("Options:");
-        if (Helper.debug) System.out.println("\t--mode: [client,chunkserver,controller], determines whether to run this process as " +
+        System.out.println("Options:");
+        System.out.println("\t--mode: [client,chunkserver,controller], determines whether to run this process as " +
                 "controller, chunk server, or client which starts controller and chunk servers if not detected).\n");
-        if (Helper.debug) System.out.println("\t--controller-port: port the controller will communicate with");
-        if (Helper.debug) System.out.println("\t--controller-machine: machine the controller will run on");
-        if (Helper.debug) System.out.println("\t--chunk-port: port the chunk servers will communicate with");
-        if (Helper.debug) System.out.println("\t--chunk-machines: comma-delimited list of machines the chunk servers will run on");
+        System.out.println("\t--controller-port: port the controller will communicate with");
+        System.out.println("\t--controller-machine: machine the controller will run on");
+        System.out.println("\t--chunk-port: port the chunk servers will communicate with");
+        System.out.println("\t--chunk-machines: comma-delimited list of machines the chunk servers will run on");
     }
 
     private static void StartProcess(String machine, String path, String args, int pIdx) {
@@ -150,21 +150,21 @@ public class Main {
         ProcessBuilder b = new ProcessBuilder(cmd);
         try {
             Processes[pIdx] = b.start();
-            if (Helper.debug) System.out.printf("Started process %s using command %s%n", Processes[pIdx].toString(), cmd.toString());
+            System.out.printf("Started process %s using command %s%n", Processes[pIdx].toString(), cmd.toString());
         } catch (IOException e) {
-            if (Helper.debug) System.out.printf("Error starting chunk process on machine %s%n", machine);
-            if (Helper.debug) System.out.println(e.getMessage());
+            System.out.printf("Error starting chunk process on machine %s%n", machine);
+            System.out.println(e.getMessage());
             Close();
             System.exit(-1);
         }
     }
 
     private static void Close() {
-        if (Helper.debug) System.out.println("Closing...");
+        System.out.println("Closing...");
         if (Processes != null) {
             for (Process p : Processes) {
                 if (p != null) {
-                    if (Helper.debug) System.out.printf("Found running process %s now closing%n", p.toString());
+                    System.out.printf("Found running process %s now closing%n", p.toString());
                     getProcessOutput(p);
                     p.destroyForcibly();
                 }
