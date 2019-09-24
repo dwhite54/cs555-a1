@@ -3,7 +3,7 @@
     <option name="INCLUDE_PROVIDED_SCOPE" value="true" />
     <option name="MAIN_CLASS_NAME" value="com.cs555.a1.Main" />
     <module name="cs555-a1" />
-    <option name="PROGRAM_PARAMETERS" value="--mode chunkserver --controller-port 50592 --controller-machine rally-king --chunk-port 50593 --chunk-machines localhost" />
+    <option name="PROGRAM_PARAMETERS" value="--mode chunkserver --controller-port 50592 --controller-machine localhost --chunk-port 50593 --debug" />
     <extension name="coverage">
       <pattern>
         <option name="PATTERN" value="com.cs555.a1.*" />

@@ -21,7 +21,7 @@ public class Helper {
     public static int readLimit = 1000;  // if each chunk is 64KB (64 * 2^10) then this is about 66mB
     public static int MajorHeartbeatSeconds = 300;
     public static int MinorHeartbeatSeconds = 30;
-    public static boolean debug = true;
+    public static boolean debug = false;
     public static boolean useReplication = false;
 
     public static final int DATA_SHARDS = 6;
@@ -29,8 +29,8 @@ public class Helper {
     public static final int TOTAL_SHARDS = 9;
     public static final int BYTES_IN_INT = 4;
 
-    private static int _replicationFactor = 3;
-    public static int replicationFactor = useReplication ? _replicationFactor : 1;
+    public static int _replicationFactor = 3;
+    public static int replicationFactor = -1;
 
     public static byte[][] erasureEncode(byte[] input) {
         final int storedSize = input.length + BYTES_IN_INT;

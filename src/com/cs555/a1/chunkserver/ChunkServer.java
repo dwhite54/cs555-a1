@@ -223,7 +223,7 @@ public class ChunkServer {
                     Helper.processTaddle(controllerMachine, controllerPort, fileName, new ArrayList<>());
                 }
                 else {
-                    System.out.println("Serving file to client");
+                    System.out.println("Serving file to client: " + fileName);
                     out.writeInt(fileContents.length);
                     out.write(fileContents);
                 }
@@ -362,8 +362,8 @@ public class ChunkServer {
                         Chunk chunk = new Chunk();
                         chunk.fileName = fileName;
                         chunk.version = 1;
-                        String[] splits = fileName.split("_");
-                        chunk.sequence = Integer.parseInt(splits[splits.length - 1].replace("chunk", ""));
+                        String[] splits = fileName.split("\\.");
+                        chunk.sequence = Integer.parseInt(splits[splits.length - 2]);
                         chunks.put(fileName, chunk);
                     }
                 }

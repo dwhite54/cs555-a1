@@ -29,6 +29,12 @@ public class Main {
         for (int i = 0; i < args.length; i++) {
             try {
                 switch (args[i]) {
+                    case "--debug":
+                        Helper.debug = true;
+                        break;
+                    case "--replication":
+                        Helper.useReplication = true;
+                        break;
                     case "--controller-port":
                         controllerPort = Integer.parseInt(args[i+1]);
                         i++;
@@ -71,6 +77,7 @@ public class Main {
                 e.printStackTrace();
             }
         }
+        Helper.replicationFactor = Helper.useReplication ? Helper._replicationFactor : 1;
 
         if (controllerMachine.equals("") || controllerPort == 0 || chunkPort == 0) {
             System.out.println("Incomplete arguments provided");
@@ -135,12 +142,13 @@ public class Main {
 
     private static void printUsage() {
         System.out.println("Options:");
-        System.out.println("\t--mode: [client,chunkserver,controller], determines whether to run this process as " +
-                "controller, chunk server, or client which starts controller and chunk servers if not detected).\n");
+        System.out.println("\t--mode: [client,chunkserver,controller], omit this and provide --chunk-machines to start all processes.\n");
         System.out.println("\t--controller-port: port the controller will communicate with");
         System.out.println("\t--controller-machine: machine the controller will run on");
         System.out.println("\t--chunk-port: port the chunk servers will communicate with");
-        System.out.println("\t--chunk-machines: comma-delimited list of machines the chunk servers will run on");
+        System.out.println("\t--chunk-machines: (optional) comma-delimited list of machines the chunk servers will run on");
+        System.out.println("\t--debug: (optional) print extra debug output");
+        System.out.println("\t--replication: (optional) use replication (omit to use erasure coding, do not mix)");
     }
 
     private static void StartProcess(String machine, String path, String args, int pIdx) {
